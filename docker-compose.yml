@@ -1,0 +1,28 @@
+services:
+  netfileshare:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: netfileshare
+    ports:
+      - "8787:8787"
+    environment:
+      NETFILESHARE_PORT: 8787
+      NETFILESHARE_STORE: disk
+      # Self-hosted runs are not behind the Netlify Function body limit.
+      NETFILESHARE_MAX_UPLOAD_MB: 100
+      NODE_ENV: production
+    volumes:
+      - netfileshare-storage:/app/storage
+      - netfileshare-data:/app/server-data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://localhost:8787/api/health >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    restart: unless-stopped
+
+volumes:
+  netfileshare-storage:
+  netfileshare-data:

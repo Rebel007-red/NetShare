@@ -1,0 +1,9 @@
+# Normalize to LF in the repository; Git still checks out native endings.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary

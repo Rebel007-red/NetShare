@@ -1,0 +1,10 @@
+node_modules
+dist
+.git
+.gitignore
+.netlify
+netlify
+netlify.toml
+storage
+server-data
+npm-debug.log*
