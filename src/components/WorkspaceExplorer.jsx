@@ -153,7 +153,6 @@ export default function WorkspaceExplorer({
         onDrop={onDrop}
       >
         <div>
-          <span className="nfs-panel__tag">Upload</span>
           <h2>Drop files here or use the picker</h2>
           <p>
             Files land in {currentPath === '/' ? 'the root folder' : currentPath} and are downloadable by anyone
@@ -197,10 +196,7 @@ export default function WorkspaceExplorer({
 
       <section className="nfs-browser">
         <div className="nfs-browser__head">
-          <div>
-            <span className="nfs-panel__tag">Contents</span>
-            <h2>{currentPath === '/' ? 'Root folder' : currentPath}</h2>
-          </div>
+          <h2>{currentPath === '/' ? 'Root folder' : currentPath}</h2>
         </div>
         {items.length === 0 ? (
           <div className="nfs-empty-state">

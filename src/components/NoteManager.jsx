@@ -51,7 +51,7 @@ function NoteEditorFields({ draft, onChange, maxBytes }) {
           value={draft.content}
           onChange={(event) => onChange({ content: event.target.value })}
           placeholder={draft.format === 'markdown' ? '# Heading\n\nWrite markdown here.' : 'Paste text here.'}
-          rows={12}
+          rows={5}
           spellCheck={draft.format !== 'code'}
         />
         <small className={`nfs-field__meter${overLimit ? ' nfs-field__meter--over' : ''}`}>
@@ -258,7 +258,6 @@ export default function NoteManager({
       <section className="nfs-panel">
         <div className="nfs-section-head nfs-section-head--compact">
           <div>
-            <span className="nfs-panel__tag">Share text</span>
             <h2>New note</h2>
             <p className="nfs-panel__hint">
               Markdown is rendered, code is highlighted, and anyone with the 6-character code can read it.

@@ -54,7 +54,6 @@ export default function NoteViewer({ code, onExit }) {
     <div className="nfs-shell nfs-shell--note">
       <header className="nfs-note-view__head">
         <div>
-          <span className="nfs-kicker">NetFileShare note</span>
           <h1>{note?.title ?? (isLoading ? 'Loading…' : 'Shared note')}</h1>
           {note ? (
             <div className="nfs-note-view__meta">

@@ -131,8 +131,7 @@ src/
     recentStore.js       localStorage "recent codes" (defensive everywhere)
     workspaceService.js  | linkService.js | noteService.js
   components/            UI; see "UI conventions" below
-  index.css              original layout
-  styles/features.css    everything added for tabs / links / notes
+  app.css                all styles (tokens, mobile-first, dark mode)
 
 server/
   app.js                 createApp() — the single API
@@ -191,13 +190,25 @@ touch the store directly for *file bytes*, which is intentional.
    an opaque 502. Lifting it means presigned direct-to-storage uploads against
    S3/R2 — that is the only real path, and it replaces the Blobs driver for
    bytes.
-6. `Content-Length` is deliberately **not** set on file responses. Trusting
+6. **`import.meta.url` is undefined in the function bundle.** Netlify's esbuild emits
+   CommonJS, so `config.js` guards it and falls back to `process.cwd()`. Do not use
+   `import.meta` unguarded anywhere under `server/`.
+7. **`serverless-http` hands Express a pre-finished request** with the payload as a
+   Buffer on `req.body`; Express 5's body parser then skips it and JSON bodies arrive
+   empty. `jsonBodyFromBuffer` in `server/app.js` decodes it. A no-op on plain Node.
+8. **`netlify dev` uses the `disk` store** (Blobs needs a linked site's credentials)
+   but keeps the 4 MB cap. To try Blobs locally: `netlify link`, then set
+   `NETFILESHARE_STORE=blobs`. Port 8888 must be free; a stale `netlify dev` holds it.
+9. **Dev-server pitfalls (both caused a blank page):** Vite proxy keys must be anchored
+   regexes (`'^/s/'`, not `'/s'`) — a bare `/s` also proxies `/src/main.jsx`. And
+   `[dev] framework = "#custom"` in `netlify.toml` is required so the `/* → /index.html`
+   SPA rule does not answer Vite's module requests with HTML.
+10. `Content-Length` is deliberately **not** set on file responses. Trusting
    stored metadata would truncate or hang the response if the two disagreed.
 
 ## UI conventions
 
-- Class names are `nfs-` prefixed BEM-ish. New feature styles go in
-  `src/styles/features.css`, which loads **after** `index.css` so it can override.
+- Class names are `nfs-` prefixed BEM-ish. New styles go in `src/app.css`.
 - All hooks are called before any early return (oxlint enforces
   `react/rules-of-hooks`).
 - Destructive actions confirm via `window.confirm` — consistent with the existing
@@ -237,22 +248,19 @@ npm run docker:up    # app + API on :8787 with persistent volumes
 
 ## Current state — read this
 
-**The code has never been compiled, linted or run.** The machine it was written
-on has no Node installed, so `npm install`, `npm run build` and `npm run lint`
-could not be executed. What *was* verified statically:
+**Verified on Node 22:** `npm install`, `npm run lint` (0 errors; 5 `set-state-in-effect`
+warnings) and `npm run build` all succeed. An end-to-end browser run (Edge via
+playwright-core) passed: create workspace, upload, download, folder create, short link
+create + 302 redirect, `javascript:` URL rejected, note create + render with script
+stripped, and an oversize upload returning 413.
 
-- Every relative import resolves to a real file
-- Every named import matches an actual export across all 40 source files
-- No unused imports
-- Brackets balance (string/template/comment aware)
+**Styling:** one mobile-first stylesheet, `src/app.css`. Colours are tokens on `:root`
+and dark mode (system setting) is a token swap. Below 720px the tabs become a fixed
+bottom bar and card action buttons become an equal-width grid; from 720px up the tabs
+sit in the top bar. Inputs are 16px so iOS does not zoom on focus. Grid containers use
+`minmax(0, 1fr)` columns so a long file name cannot widen the page.
 
-Not verified: JSX and type correctness, the bundle building, runtime behaviour of
-any endpoint, the Netlify function wiring end to end.
-
-**First task for whoever has Node:** `npm install && npm run lint && npm run build`,
-then fix what surfaces.
-
-**`package-lock.json` is stale** — it predates the `@netlify/blobs`, `marked`,
+**`package-lock.json` was stale** — it predates the `@netlify/blobs`, `marked`,
 `dompurify`, `highlight.js`, `qrcode.react` and `serverless-http` additions.
 `npm install` will refresh it. Until then `npm ci` will fail, which is why the
 Dockerfile uses `npm install`.
@@ -278,8 +286,7 @@ Asked and answered during the build:
 
 ## Next steps, in the order they will actually matter
 
-1. Get Node installed and make the thing build. Everything else is blocked on this.
-2. Presigned direct-to-storage uploads, if 4 MB turns out to pinch.
+1. Presigned direct-to-storage uploads, if 4 MB turns out to pinch.
 3. SQLite or Postgres for metadata, if concurrent writes ever actually collide.
 4. ZIP download of a whole folder.
 5. Per-workspace storage quotas.

@@ -23,17 +23,6 @@ function getFileExtension(fileName) {
   return parts.at(-1).slice(0, 4).toUpperCase();
 }
 
-function getFileLabel(file) {
-  const mimeType = String(file?.mimeType ?? '').toLowerCase();
-  if (mimeType.startsWith('image/')) return 'Image';
-  if (mimeType.startsWith('video/')) return 'Video';
-  if (mimeType.startsWith('audio/')) return 'Audio';
-  if (mimeType.includes('pdf')) return 'PDF';
-  if (mimeType.includes('msi') || mimeType.includes('x-msdownload')) return 'Installer';
-  if (mimeType.includes('zip') || mimeType.includes('compressed') || mimeType.includes('tar')) return 'Archive';
-  return getFileExtension(file?.name);
-}
-
 function WorkspaceCard({
   workspace,
   shareUrlFor,
@@ -102,7 +91,7 @@ function WorkspaceCard({
           </div>
           <div className="nfs-workspace-card__meta-inline">
             <span>{stats.files} files</span>
-            <span>{stats.folders} folders</span>
+            {stats.folders > 0 ? <span>{stats.folders} folders</span> : null}
             <span>{formatBytes(stats.totalBytes)}</span>
             <span>{formatDateTime(workspace.createdAt)}</span>
           </div>
@@ -174,48 +163,32 @@ function WorkspaceCard({
           <span className="nfs-workspace-card__file-empty">No files yet</span>
         ) : (
           files.map((file) => (
-            <div key={file.id ?? file.path} className="nfs-workspace-card__file-item">
-              <div className="nfs-workspace-card__file-shine" />
-              <div className="nfs-workspace-card__file-glow" />
-              <div className="nfs-workspace-card__file-content">
-                <span className="nfs-workspace-card__file-badge">{getFileExtension(file.name)}</span>
-                <div className="nfs-workspace-card__preview">
-                  {isImageFile(file) ? (
-                    <img src={getInlineFileUrl(workspace.code, file)} alt={file.name} loading="lazy" />
-                  ) : (
-                    <span className="nfs-workspace-card__file-type">{getFileLabel(file)}</span>
-                  )}
-                </div>
-                <div className="nfs-workspace-card__file-text">
-                  <p className="nfs-workspace-card__file-title" title={file.path}>{file.name}</p>
-                  <p className="nfs-workspace-card__file-description">
-                    {file.parentPath === '/' ? getFileLabel(file) : file.parentPath}
-                  </p>
-                </div>
-                <div className="nfs-workspace-card__file-footer">
-                  <span className="nfs-workspace-card__file-size">{formatBytes(file.size)}</span>
-                  <div className="nfs-workspace-card__file-actions">
-                    <button
-                      type="button"
-                      className="nfs-mini-btn nfs-mini-btn--icon"
-                      onClick={() => onDownloadFile?.(workspace.code, file)}
-                      aria-label={`Download ${file.name}`}
-                      title="Download"
-                    >
-                      <DownloadIcon />
-                    </button>
-                    <button
-                      type="button"
-                      className="nfs-mini-btn nfs-mini-btn--icon nfs-mini-btn--danger"
-                      onClick={() => onRemoveFile?.(workspace.code, file.path)}
-                      aria-label={`Remove ${file.name}`}
-                      title="Remove"
-                    >
-                      <RemoveIcon />
-                    </button>
-                  </div>
-                </div>
-              </div>
+            <div key={file.id ?? file.path} className="nfs-file-row">
+              {isImageFile(file) ? (
+                <img className="nfs-file-row__thumb" src={getInlineFileUrl(workspace.code, file)} alt="" loading="lazy" />
+              ) : (
+                <span className="nfs-file-row__type">{getFileExtension(file.name)}</span>
+              )}
+              <span className="nfs-file-row__name" title={file.path}>{file.name}</span>
+              <span className="nfs-file-row__size">{formatBytes(file.size)}</span>
+              <button
+                type="button"
+                className="nfs-mini-btn nfs-mini-btn--icon"
+                onClick={() => onDownloadFile?.(workspace.code, file)}
+                aria-label={`Download ${file.name}`}
+                title="Download"
+              >
+                <DownloadIcon />
+              </button>
+              <button
+                type="button"
+                className="nfs-mini-btn nfs-mini-btn--icon nfs-mini-btn--danger"
+                onClick={() => onRemoveFile?.(workspace.code, file.path)}
+                aria-label={`Remove ${file.name}`}
+                title="Remove"
+              >
+                <RemoveIcon />
+              </button>
             </div>
           ))
         )}
@@ -261,7 +234,6 @@ export default function WorkspaceHome({
       <section className="nfs-panel nfs-panel--flush">
         <div className="nfs-section-head nfs-section-head--compact">
           <div>
-            <span className="nfs-panel__tag">Files</span>
             <h2>Workspaces</h2>
             <p className="nfs-panel__hint">
               Share the 6-character code or the invite link. Anyone holding it has full access to the workspace.

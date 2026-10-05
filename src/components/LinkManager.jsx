@@ -176,8 +176,7 @@ export default function LinkManager({ links, isLoading, onCreate, onDelete, onUp
       <section className="nfs-panel">
         <div className="nfs-section-head nfs-section-head--compact">
           <div>
-            <span className="nfs-panel__tag">Shorten</span>
-            <h2>Create a short link</h2>
+            <h2>New short link</h2>
             <p className="nfs-panel__hint">
               Short links never expire unless you set a date. Anyone with the short URL can open the destination.
             </p>
@@ -200,14 +199,19 @@ export default function LinkManager({ links, isLoading, onCreate, onDelete, onUp
             <input value={form.alias} onChange={update('alias')} placeholder="release-notes" maxLength={64} />
             {aliasError ? <small className="nfs-field__error">{aliasError}</small> : null}
           </label>
-          <label className="nfs-field">
-            <span>Label <em>optional</em></span>
-            <input value={form.title} onChange={update('title')} placeholder="Q3 release notes" maxLength={120} />
-          </label>
-          <label className="nfs-field">
-            <span>Expires <em>optional</em></span>
-            <input type="datetime-local" value={form.expiresAt} onChange={update('expiresAt')} />
-          </label>
+          <details className="nfs-more nfs-field--wide">
+            <summary>More options</summary>
+            <div className="nfs-more__fields">
+            <label className="nfs-field">
+              <span>Label <em>optional</em></span>
+              <input value={form.title} onChange={update('title')} placeholder="Q3 release notes" maxLength={120} />
+            </label>
+            <label className="nfs-field">
+              <span>Expires <em>optional</em></span>
+              <input type="datetime-local" value={form.expiresAt} onChange={update('expiresAt')} />
+            </label>
+              </div>
+          </details>
           <div className="nfs-link-form__actions">
             <button type="submit" className="nfs-btn nfs-btn--primary" disabled={isCreating || !form.targetUrl.trim()}>
               {isCreating ? 'Creating' : 'Create short link'}

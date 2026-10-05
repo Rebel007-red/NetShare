@@ -12,9 +12,11 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      // `/s` is the short-link redirect, which the API owns rather than the SPA.
-      '/api': { target: proxyTarget, changeOrigin: true },
-      '/s': { target: proxyTarget, changeOrigin: true },
+      // Keys are anchored regexes on purpose. A bare '/s' is a prefix match and
+      // would also proxy /src/main.jsx, /src/App.jsx and every other source file.
+      // `/s/` is the short-link redirect, which the API owns rather than the SPA.
+      '^/api/': { target: proxyTarget, changeOrigin: true },
+      '^/s/': { target: proxyTarget, changeOrigin: true },
     },
   },
 })

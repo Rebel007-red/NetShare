@@ -539,8 +539,7 @@ export default function App() {
       <div className="nfs-shell nfs-shell--home">
         <header className="nfs-home-header">
           <div className="nfs-home-header__copy">
-            <span className="nfs-kicker">NetFileShare</span>
-            <h1>File Store</h1>
+            <h1>NetFileShare</h1>
           </div>
           <nav className="nfs-tabs" aria-label="Sections">
             {TABS.map((item) => (

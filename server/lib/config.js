@@ -1,7 +1,12 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Netlify's esbuild bundles the function as CommonJS, where import.meta.url is
+// undefined. ROOT_DIR is only used by the disk store and static serving, neither
+// of which runs there, so the working directory is a safe fallback.
+const __dirname = import.meta.url
+  ? path.dirname(fileURLToPath(import.meta.url))
+  : path.join(process.cwd(), 'server', 'lib');
 
 export const ROOT_DIR = path.resolve(__dirname, '..', '..');
 export const DATA_DIR = process.env.NETFILESHARE_DATA_DIR || path.join(ROOT_DIR, 'server-data');
@@ -10,18 +15,24 @@ export const DIST_DIR = path.join(ROOT_DIR, 'dist');
 
 export const PORT = Number(process.env.NETFILESHARE_PORT || 8787);
 
-/** Netlify sets NETLIFY=true in both builds and function runtimes. */
-export const IS_NETLIFY = process.env.NETLIFY === 'true' || process.env.NETLIFY === '1';
+const flag = (name) => ['true', '1'].includes(process.env[name] ?? '');
+
+/** NETLIFY is set in builds and deployed functions; NETLIFY_DEV only under `netlify dev`. */
+export const IS_NETLIFY = flag('NETLIFY');
+export const IS_NETLIFY_DEV = flag('NETLIFY_DEV');
 
 /**
  * `blobs` works on Netlify (ephemeral filesystem); `disk` works for local and
- * Docker runs. Override with NETFILESHARE_STORE to test either path anywhere.
+ * Docker runs. `netlify dev` uses disk by default because Blobs needs a linked
+ * site's credentials, which a fresh checkout does not have. To exercise Blobs
+ * locally, run `netlify link` and set NETFILESHARE_STORE=blobs.
  */
 export const STORE_DRIVER = (process.env.NETFILESHARE_STORE || (IS_NETLIFY ? 'blobs' : 'disk')).toLowerCase();
 
 export const BLOB_STORE_NAME = process.env.NETFILESHARE_BLOB_STORE || 'netfileshare';
 
-const DEFAULT_MAX_UPLOAD_MB = STORE_DRIVER === 'blobs' ? 4 : 100;
+// `netlify dev` keeps the hosted 4 MB cap so the limit can be tried locally.
+const DEFAULT_MAX_UPLOAD_MB = STORE_DRIVER === 'blobs' || IS_NETLIFY || IS_NETLIFY_DEV ? 4 : 100;
 
 /**
  * Netlify Functions reject request bodies above roughly 6 MB, so the hosted
