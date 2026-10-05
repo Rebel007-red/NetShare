@@ -1,6 +1,6 @@
 import express from 'express';
 import { MAX_NOTE_BYTES, describeLimits } from './lib/config.js';
-import { HttpError, badRequest, payloadTooLarge } from './lib/errors.js';
+import { HttpError } from './lib/errors.js';
 import { isValidSlug, normalizeSlug } from './lib/ids.js';
 import { resolveForRedirect } from './lib/links.js';
 import linksRouter from './routes/links.js';
@@ -31,33 +31,11 @@ function redirectPage(targetUrl) {
 </head><body>Redirecting to <a href="${safe}">${safe}</a>.</body></html>`;
 }
 
-/**
- * serverless-http (the Netlify wrapper) hands Express a request that is already
- * "finished" and carries the raw payload as a Buffer on `req.body`. Express 5's
- * body parser skips finished requests, so JSON bodies would silently arrive
- * empty on Netlify while working locally. Decode that Buffer ourselves; on the
- * normal Node server `req.body` is undefined here and this does nothing.
- */
-function jsonBodyFromBuffer(req, res, next) {
-  if (!Buffer.isBuffer(req.body)) return next();
-  if (!req.is('application/json')) return next();
-  if (req.body.length > MAX_NOTE_BYTES + 64 * 1024) {
-    return next(payloadTooLarge('That request body is too large'));
-  }
-  try {
-    req.body = req.body.length ? JSON.parse(req.body.toString('utf8')) : {};
-    return next();
-  } catch {
-    return next(badRequest('Request body is not valid JSON'));
-  }
-}
-
 export function createApp() {
   const app = express();
 
   app.disable('x-powered-by');
   app.set('trust proxy', true);
-  app.use(jsonBodyFromBuffer);
   // Derived from the note ceiling so raising NETFILESHARE_MAX_NOTE_KB does not
   // start failing at the body parser instead of the validator.
   app.use(express.json({ limit: MAX_NOTE_BYTES + 64 * 1024 }));

@@ -7,9 +7,9 @@ import { cleanupExpiredWorkspaces } from '../../server/lib/workspaces.js';
  * uses. Expired records are also purged lazily on access, so this only reclaims
  * storage for codes nobody comes back to.
  *
- * The schedule itself is declared in netlify.toml under [functions.cleanup].
+ * Runs hourly; the schedule is declared below so it travels with the function.
  */
-export const handler = async () => {
+export default async () => {
   try {
     const [workspaces, notes, links] = await Promise.all([
       cleanupExpiredWorkspaces(),
@@ -18,9 +18,11 @@ export const handler = async () => {
     ]);
 
     console.log(`[netfileshare] cleanup kept ${workspaces} workspaces, ${notes} notes, ${links} links`);
-    return { statusCode: 200, body: JSON.stringify({ ok: true, workspaces, notes, links }) };
+    return Response.json({ ok: true, workspaces, notes, links });
   } catch (error) {
     console.error('[netfileshare] cleanup failed', error);
-    return { statusCode: 500, body: JSON.stringify({ ok: false }) };
+    return Response.json({ ok: false }, { status: 500 });
   }
 };
+
+export const config = { schedule: '@hourly' };

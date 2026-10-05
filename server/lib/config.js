@@ -1,14 +1,14 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// Netlify's esbuild bundles the function as CommonJS, where import.meta.url is
-// undefined. ROOT_DIR is only used by the disk store and static serving, neither
-// of which runs there, so the working directory is a safe fallback.
-const __dirname = import.meta.url
+// Not named __dirname: Netlify's bundler injects its own __dirname shim into
+// function bundles, and redeclaring it is a SyntaxError that 500s every request.
+// The fallback covers bundles where import.meta.url is undefined.
+const moduleDir = import.meta.url
   ? path.dirname(fileURLToPath(import.meta.url))
   : path.join(process.cwd(), 'server', 'lib');
 
-export const ROOT_DIR = path.resolve(__dirname, '..', '..');
+export const ROOT_DIR = path.resolve(moduleDir, '..', '..');
 export const DATA_DIR = process.env.NETFILESHARE_DATA_DIR || path.join(ROOT_DIR, 'server-data');
 export const STORAGE_DIR = process.env.NETFILESHARE_STORAGE_DIR || path.join(ROOT_DIR, 'storage');
 export const DIST_DIR = path.join(ROOT_DIR, 'dist');
@@ -17,9 +17,21 @@ export const PORT = Number(process.env.NETFILESHARE_PORT || 8787);
 
 const flag = (name) => ['true', '1'].includes(process.env[name] ?? '');
 
-/** NETLIFY is set in builds and deployed functions; NETLIFY_DEV only under `netlify dev`. */
-export const IS_NETLIFY = flag('NETLIFY');
 export const IS_NETLIFY_DEV = flag('NETLIFY_DEV');
+
+/**
+ * NETLIFY=true is only guaranteed during builds; it is not reliably present in
+ * the deployed function runtime, which is where the disk driver would fail on
+ * the read-only filesystem. So also look for what the runtime does set: the
+ * Blobs context, or the AWS Lambda markers Netlify Functions run under.
+ * `netlify dev` sets NETLIFY_DEV and is treated separately.
+ */
+export const IS_NETLIFY = !IS_NETLIFY_DEV && (
+  flag('NETLIFY')
+  || Boolean(process.env.NETLIFY_BLOBS_CONTEXT)
+  || Boolean(process.env.AWS_LAMBDA_FUNCTION_NAME)
+  || Boolean(process.env.LAMBDA_TASK_ROOT)
+);
 
 /**
  * `blobs` works on Netlify (ephemeral filesystem); `disk` works for local and

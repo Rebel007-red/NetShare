@@ -10,24 +10,9 @@
   node_bundler = "esbuild"
   # Express and Multer are CommonJS with dynamic requires, so they ship as real
   # node_modules rather than being inlined by the bundler.
-  external_node_modules = ["express", "multer", "serverless-http", "@netlify/blobs"]
+  external_node_modules = ["express", "multer", "@netlify/blobs"]
 
-[functions.cleanup]
-  schedule = "0 * * * *"
-
-# The API and the short-link redirect are both served by the same function.
-[[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/api/api/:splat"
-  status = 200
-  force = true
-
-[[redirects]]
-  from = "/s/*"
-  to = "/.netlify/functions/api/s/:splat"
-  status = 200
-  force = true
-
+# /api/* and /s/* are routed to the api function by its own `config.path`.
 # Everything else is the single-page app.
 [[redirects]]
   from = "/*"

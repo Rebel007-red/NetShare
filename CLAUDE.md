@@ -73,7 +73,7 @@ Postgres — not a reason to make the lock cleverer.
 `server/app.js` exports `createApp()`. Two things run it:
 
 - `server/index.js` — `app.listen`, plus static `dist` serving (local, Docker)
-- `netlify/functions/api.js` — the same app wrapped in `serverless-http`
+- `netlify/functions/api.js` — the same app behind a Netlify-format handler
 
 Do not fork route logic per deployment target. If something must differ, it goes
 behind a config value in `server/lib/config.js`.
@@ -148,8 +148,8 @@ server/
     store/               disk.js | blobs.js | index.js | mutex.js
 
 netlify/functions/
-  api.js                 serverless-http wrapper + path normalization
-  cleanup.js             hourly scheduled expiry sweep
+  api.js                 Netlify-format handler -> loopback Express
+  cleanup.js             hourly expiry sweep (schedule in its own config)
 ```
 
 **Layering rule:** `routes/` must not touch `store/` for metadata. It calls
@@ -171,40 +171,50 @@ touch the store directly for *file bytes*, which is intentional.
 
 ## Netlify specifics
 
-`netlify.toml` does all the wiring. Points that are easy to break:
+The function uses **Netlify's current format** — `export default (request) => Response`
+plus `export const config` — not the Lambda-compatible `(event, context)` one. This
+is not a style choice: only the current format gets the full Blobs credentials. The
+Lambda form's `connectLambda()` context has no `uncachedEdgeURL`, which
+`consistency: 'strong'` requires, so every read-after-write throws. That mismatch is
+what made a deployed site answer "Unexpected server error" on every write.
 
-1. **`/api/*` and `/s/*` both rewrite to the one `api` function.** Everything
-   else falls back to `index.html`.
-2. **Path normalization matters.** `netlify/functions/api.js` prefers
-   `event.rawUrl` (always the caller's original URL) and only falls back to
-   undoing the `/.netlify/functions/api` rewrite prefix. Express needs the
-   original path; getting this wrong 404s the whole API.
-3. **`binary: true`** on `serverless-http` base64-encodes every response.
-   Netlify decodes it. Without this, file downloads are corrupted by a UTF-8
-   round trip.
-4. **`external_node_modules`** keeps `express` and `multer` as real
-   `node_modules` rather than esbuild-inlined, because they are CommonJS with
-   dynamic requires.
-5. **4 MB upload cap.** Netlify Functions reject bodies over roughly 6 MB. The
-   cap is deliberate and confirmed as acceptable. The error is a clean 413, not
-   an opaque 502. Lifting it means presigned direct-to-storage uploads against
-   S3/R2 — that is the only real path, and it replaces the Blobs driver for
-   bytes.
-6. **`import.meta.url` is undefined in the function bundle.** Netlify's esbuild emits
-   CommonJS, so `config.js` guards it and falls back to `process.cwd()`. Do not use
-   `import.meta` unguarded anywhere under `server/`.
-7. **`serverless-http` hands Express a pre-finished request** with the payload as a
-   Buffer on `req.body`; Express 5's body parser then skips it and JSON bodies arrive
-   empty. `jsonBodyFromBuffer` in `server/app.js` decodes it. A no-op on plain Node.
-8. **`netlify dev` uses the `disk` store** (Blobs needs a linked site's credentials)
+Points that are easy to break:
+
+1. **Routing lives in the function, not `netlify.toml`.** `config.path` declares
+   `/api/*` and `/s/*`, so Express sees the caller's real path and no rewrite or
+   path-normalization step is needed. `netlify.toml` only keeps the SPA fallback.
+2. **Express runs behind a loopback server.** `createApp()` listens on port 0 once
+   per cold start and the handler forwards each request to it, because Express needs
+   a Node request, not a `Request`. Responses stream back untouched, which is what
+   keeps downloads byte-exact — the old `serverless-http` + `binary: true` base64
+   round trip is gone.
+3. **Forward with `node:http`, not `fetch`.** On an oversize upload Express answers
+   413 and closes the socket mid-body; `fetch` turns that into an opaque
+   "fetch failed", while `node:http` still delivers the 413.
+4. **Request bodies are buffered, responses are not.** Netlify caps bodies near 6 MB
+   anyway, and buffering lets `content-length` be set correctly for Express.
+5. **`external_node_modules`** keeps `express` and `multer` as real `node_modules`
+   rather than esbuild-inlined, because they are CommonJS with dynamic requires.
+6. **4 MB upload cap.** Netlify Functions reject bodies over roughly 6 MB. The cap is
+   deliberate and confirmed as acceptable; the error is a clean 413, not an opaque
+   502. Lifting it means presigned direct-to-storage uploads against S3/R2 — that is
+   the only real path, and it replaces the Blobs driver for bytes.
+7. **Driver selection cannot rely on `NETLIFY=true`.** That is set during builds but
+   not reliably in the function runtime, so `disk` was being chosen on a deployed
+   site. `config.js` also checks `NETLIFY_BLOBS_CONTEXT` and the Lambda markers.
+8. **Never declare `__dirname`.** Netlify's bundler injects its own shim; redeclaring
+   it is a `SyntaxError` that 500s every request. `config.js` uses `moduleDir`, and
+   guards `import.meta.url` since it is undefined in a CommonJS bundle.
+9. **`netlify dev` uses the `disk` store** (Blobs needs a linked site's credentials)
    but keeps the 4 MB cap. To try Blobs locally: `netlify link`, then set
    `NETFILESHARE_STORE=blobs`. Port 8888 must be free; a stale `netlify dev` holds it.
-9. **Dev-server pitfalls (both caused a blank page):** Vite proxy keys must be anchored
-   regexes (`'^/s/'`, not `'/s'`) — a bare `/s` also proxies `/src/main.jsx`. And
-   `[dev] framework = "#custom"` in `netlify.toml` is required so the `/* → /index.html`
-   SPA rule does not answer Vite's module requests with HTML.
-10. `Content-Length` is deliberately **not** set on file responses. Trusting
-   stored metadata would truncate or hang the response if the two disagreed.
+10. **Dev-server pitfalls (both caused a blank page):** Vite proxy keys must be
+   anchored regexes (`'^/s/'`, not `'/s'`) — a bare `/s` also proxies
+   `/src/main.jsx`. And `[dev] framework = "#custom"` in `netlify.toml` is required
+   so the `/* → /index.html` SPA rule does not answer Vite's module requests with
+   HTML.
+11. `Content-Length` is deliberately **not** set on file responses. Trusting stored
+   metadata would truncate or hang the response if the two disagreed.
 
 ## UI conventions
 
@@ -260,10 +270,8 @@ bottom bar and card action buttons become an equal-width grid; from 720px up the
 sit in the top bar. Inputs are 16px so iOS does not zoom on focus. Grid containers use
 `minmax(0, 1fr)` columns so a long file name cannot widen the page.
 
-**`package-lock.json` was stale** — it predates the `@netlify/blobs`, `marked`,
-`dompurify`, `highlight.js`, `qrcode.react` and `serverless-http` additions.
-`npm install` will refresh it. Until then `npm ci` will fail, which is why the
-Dockerfile uses `npm install`.
+**`package-lock.json` is current** — it was regenerated by `npm install` once Node
+was available, so `npm ci` works. The Dockerfile still uses `npm install`.
 
 **Storage layout changed and old data is not readable.** Metadata moved from one
 `workspaces.json` array to per-record files; bytes moved from
