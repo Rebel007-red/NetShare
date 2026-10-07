@@ -1,4 +1,4 @@
-import { request } from './apiClient.js';
+import { request, unlockItem } from './apiClient.js';
 import { createRecentStore, readSingle, writeSingle } from './recentStore.js';
 
 const LAST_CODE_KEY = 'netfileshare-last-workspace-code';
@@ -55,7 +55,15 @@ export async function listWorkspaces() {
   const codes = recent.list();
   if (codes.length === 0) return [];
 
-  const resolved = await Promise.all(codes.map((code) => getWorkspaceByCode(code)));
+  // A PIN-protected workspace answers 401 here. That is not "gone", so keep its
+  // code and show a locked placeholder instead of silently forgetting it.
+  const resolved = await Promise.all(codes.map(async (code) => {
+    try {
+      return await request(workspaceUrl(code), { interactive: false });
+    } catch (error) {
+      return error?.code === 'pin_required' ? lockedWorkspace(code) : null;
+    }
+  }));
   const workspaces = resolved.filter(Boolean);
   recent.replace(workspaces.map((workspace) => workspace.code));
 
@@ -63,6 +71,32 @@ export async function listWorkspaces() {
     clearLastWorkspaceCode();
   }
   return workspaces;
+}
+
+function lockedWorkspace(code) {
+  return { code, name: 'Protected workspace', locked: true, items: [], isPersistent: true };
+}
+
+/** Prompts for the PIN, then resolves true if the workspace is now open to this browser. */
+export function unlockWorkspace(code) {
+  return unlockItem('workspace', normalizeCode(code));
+}
+
+export async function setWorkspacePin(code, pin) {
+  return remember(await request(workspaceUrl(code, '/pin'), { method: 'POST', json: { pin } }));
+}
+
+export function getZipUrl(code, folderPath = '/') {
+  return workspaceUrl(code, `/zip?path=${encodePath(folderPath)}`);
+}
+
+/** Codes this browser remembers, for the backup panel. */
+export function rememberedWorkspaceCodes() {
+  return recent.list();
+}
+
+export function rememberWorkspaceCode(code) {
+  recent.remember(code);
 }
 
 export async function getWorkspaceByCode(code) {
@@ -117,11 +151,24 @@ export async function uploadFiles(code, parentPath, files) {
   const list = Array.from(files ?? []);
   if (list.length === 0) throw new Error('Select at least one file to upload');
 
-  const formData = new FormData();
-  formData.set('parentPath', ensureRoot(parentPath));
-  list.forEach((file) => formData.append('files', file, file.name));
+  // One request per file. Hosts such as Netlify cap the size of a whole request,
+  // so sending files together could fail even when each file is under the limit.
+  let latest = null;
+  for (const [index, file] of list.entries()) {
+    const formData = new FormData();
+    formData.set('parentPath', ensureRoot(parentPath));
+    formData.append('files', file, file.name);
+    try {
+      latest = await request(workspaceUrl(code, '/files'), { method: 'POST', body: formData });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'Upload failed';
+      if (index === 0) throw new Error(`${file.name}: ${reason}`);
+      remember(latest);
+      throw new Error(`Uploaded ${index} of ${list.length} files. ${file.name}: ${reason}`);
+    }
+  }
 
-  return remember(await request(workspaceUrl(code, '/files'), { method: 'POST', body: formData }));
+  return remember(latest);
 }
 
 export async function removeItem(code, itemPath) {

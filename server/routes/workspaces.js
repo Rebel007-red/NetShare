@@ -1,11 +1,13 @@
 import express from 'express';
 import multer from 'multer';
-import { MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES } from '../lib/config.js';
+import { MAX_UPLOAD_BYTES, MAX_UPLOAD_FILES, MAX_ZIP_BYTES } from '../lib/config.js';
 import { badRequest, conflict, notFound, payloadTooLarge } from '../lib/errors.js';
 import { makeId } from '../lib/ids.js';
-import { buildChildPath, normalizePath, parentPathOf, sanitizeName, sanitizeUploadName } from '../lib/paths.js';
+import { buildChildPath, isDescendantPath, normalizePath, parentPathOf, sanitizeName, sanitizeUploadName } from '../lib/paths.js';
 import { getStore } from '../lib/store/index.js';
 import { now, toIso } from '../lib/time.js';
+import { withActivity } from '../lib/activity.js';
+import { streamZip } from '../lib/zip.js';
 import {
   collectSubtree,
   createWorkspace,
@@ -26,6 +28,9 @@ import {
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: MAX_UPLOAD_BYTES, files: MAX_UPLOAD_FILES },
+  // Browsers send filenames as UTF-8. The default (latin1) turns "ünï.txt" into
+  // "Ã¼nÃ¯.txt" for every non-ASCII name.
+  defParamCharset: 'utf8',
 });
 
 /**
@@ -74,6 +79,18 @@ async function sendStoredFile(res, workspace, item, { asDownload }) {
   stream.pipe(res);
 }
 
+/** "a.txt", "a.txt, b.txt", or "a.txt, b.txt and 3 more" — enough to recognise an upload. */
+function summarizeNames(names) {
+  const shown = names.slice(0, 2).join(', ');
+  return names.length > 2 ? `${shown} and ${names.length - 2} more` : shown;
+}
+
+function zipFilename(workspace, folder) {
+  const base = [workspace.name, folder?.name].filter(Boolean).join('-');
+  const clean = base.replace(/[^\w .-]+/g, '-').replace(/-{2,}/g, '-').replace(/^[-. ]+|[-. ]+$/g, '').slice(0, 80);
+  return `${clean || workspace.code}.zip`;
+}
+
 const router = express.Router();
 
 router.post('/', async (req, res, next) => {
@@ -100,7 +117,7 @@ router.get('/:code', async (req, res, next) => {
 router.patch('/:code', async (req, res, next) => {
   try {
     const nextName = sanitizeName(req.body?.name);
-    const workspace = await updateWorkspace(req.params.code, (current) => touch(current, { name: nextName }));
+    const workspace = await updateWorkspace(req.params.code, (current) => touch(current, { name: nextName }, ['renamed-workspace', nextName]));
     res.json(presentWorkspace(workspace));
   } catch (error) {
     next(error);
@@ -159,7 +176,7 @@ router.post('/:code/folders', async (req, res, next) => {
           },
           ...current.items,
         ],
-      });
+      }, ['folder', folderName]);
     });
 
     res.status(201).json(presentWorkspace(workspace));
@@ -208,7 +225,7 @@ router.post('/:code/files', uploadFiles, async (req, res, next) => {
         items.unshift(item);
       }
 
-      return touch(current, { items });
+      return touch(current, { items }, ['uploaded', summarizeNames(files.map((file) => sanitizeUploadName(file.originalname)))]);
     });
 
     writtenKeys.length = 0;
@@ -232,7 +249,7 @@ router.patch('/:code/items/rename', async (req, res, next) => {
       if (nextPath === item.path) return current;
       if (hasItemAt(current, nextPath)) throw conflict('An item with that name already exists here');
       // File bytes are keyed by item id, so a rename touches metadata only.
-      return renameSubtree(current, item.path, nextPath, nextName);
+      return withActivity(renameSubtree(current, item.path, nextPath, nextName), 'renamed', `${item.name} to ${nextName}`);
     });
 
     res.json(presentWorkspace(workspace));
@@ -248,16 +265,80 @@ router.delete('/:code/items', async (req, res, next) => {
 
     const store = getStore();
     const workspace = await updateWorkspace(req.params.code, async (current) => {
-      requireItem(current, itemPath);
+      const target = requireItem(current, itemPath);
       const doomed = collectSubtree(current, itemPath).filter((item) => item.type === 'file');
       await Promise.all(
         doomed.map((item) => store.deleteFile(fileKeyForItem(current, item)).catch(() => undefined)),
       );
-      return removeSubtree(current, itemPath);
+      return withActivity(removeSubtree(current, itemPath), 'deleted', target.name);
     });
 
     res.json(presentWorkspace(workspace));
   } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * A folder (or the whole workspace) as one ZIP. Files are read and written one at
+ * a time, so memory stays at the size of the largest file, not the whole folder.
+ */
+router.get('/:code/zip', async (req, res, next) => {
+  try {
+    const workspace = await requireWorkspace(req.params.code);
+    const folderPath = normalizePath(req.query.path ?? '/');
+
+    let folder = null;
+    if (folderPath !== '/') {
+      folder = requireItem(workspace, folderPath);
+      if (folder.type !== 'folder') throw badRequest('Only folders can be downloaded as a ZIP');
+    }
+
+    const inside = (workspace.items ?? []).filter(
+      (item) => folderPath === '/' || isDescendantPath(item.path, folderPath),
+    );
+    if (inside.length === 0) throw badRequest('There is nothing to download here yet');
+
+    const total = inside.reduce((sum, item) => sum + (item.type === 'file' ? Number(item.size ?? 0) : 0), 0);
+    if (total > MAX_ZIP_BYTES) {
+      const limitMb = Math.floor(MAX_ZIP_BYTES / (1024 * 1024));
+      throw payloadTooLarge(`This is too big for one ZIP (the limit is ${limitMb} MB). Download the files one at a time.`);
+    }
+
+    const store = getStore();
+    const prefixLength = folderPath === '/' ? 1 : folderPath.length + 1;
+    const entries = [...inside]
+      .sort((left, right) => left.path.localeCompare(right.path))
+      .map((item) => {
+        const isDir = item.type === 'folder';
+        const relative = item.path.slice(prefixLength);
+        return {
+          name: isDir ? `${relative}/` : relative,
+          isDir,
+          size: isDir ? 0 : Number(item.size ?? 0),
+          modifiedAt: item.createdAt,
+          read: async () => {
+            const bytes = await store.getFileBuffer(fileKeyForItem(workspace, item));
+            if (!bytes) throw notFound(`${item.name} is no longer available`);
+            return bytes;
+          },
+        };
+      });
+
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Cache-Control', 'private, max-age=0, must-revalidate');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(zipFilename(workspace, folder))}`);
+
+    await streamZip(res, entries);
+    res.end();
+  } catch (error) {
+    // Once bytes are on the wire the status is fixed; drop the connection so the
+    // client sees a failed download instead of a ZIP that is quietly truncated.
+    if (res.headersSent) {
+      res.destroy();
+      return;
+    }
     next(error);
   }
 });

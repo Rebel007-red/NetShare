@@ -46,12 +46,17 @@ function forward({ port, method, path, headers, body }) {
   });
 }
 
-export default async (request) => {
+export default async (request, context) => {
   const port = await getPort();
   const url = new URL(request.url);
 
   const headers = Object.fromEntries(request.headers);
   for (const name of HOP_BY_HOP) delete headers[name];
+  // Rate limits key on the client address. A caller can send its own
+  // X-Forwarded-For, so replace it with the address Netlify itself observed.
+  const clientIp = headers['x-nf-client-connection-ip'] || context?.ip || '';
+  if (clientIp) headers['x-forwarded-for'] = clientIp;
+  else delete headers['x-forwarded-for'];
   // Express builds absolute URLs (short links, redirects) from these.
   headers['x-forwarded-host'] = url.host;
   headers['x-forwarded-proto'] = url.protocol.replace(':', '');

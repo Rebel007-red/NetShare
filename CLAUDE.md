@@ -13,6 +13,7 @@ A small internal sharing tool with three features behind short codes:
 | Files and folders | `/w/<CODE>` invite link, or join by code | 6 chars, `[A-Z1-9]` |
 | Short links | `/s/<slug>` redirect | 7 chars, or a custom alias |
 | Text / doc notes | `/note/<CODE>` read page | 6 chars, `[A-Z1-9]` |
+| Live editing | `/note/<CODE>?edit=1`, same code as the note | a per-note switch, not a new code |
 
 Target scale is **5–10 internal users**. That number is a real design input, not
 a disclaimer — several decisions below are correct only at that size and are
@@ -30,6 +31,10 @@ including delete. This was confirmed as the intended model. Consequences:
 - Codes come from `crypto.randomInt` (`server/lib/ids.js`), never `Math.random`,
   because guessing a code is the whole attack.
 - The alphabet omits `I`, `O` and `0` so codes survive being read aloud.
+- Two things sit *around* the model without replacing it: an optional **team passphrase**
+  that guards only *creating* things (see "Access, limits and PINs"), and an optional
+  **per-item PIN** for the rare share that needs a second factor. With neither configured,
+  the code is still the whole story.
 - Do not add a feature that leaks codes (e.g. a "list all workspaces" endpoint).
   The only enumeration is the browser's own localStorage list.
 
@@ -126,11 +131,15 @@ src/
     markdown.js          marked + DOMPurify
     highlight.js         highlight.js core + 19 explicitly registered languages
     router.js            pathname router for /note/<CODE> and /w/<CODE>
+    liveSync.js          diff-match-patch helpers for live editing (client half)
+  hooks/
+    useLiveNote.js       the live-editing sync loop (polling, merge, caret, presence)
   services/
     apiClient.js         fetch wrapper, formatters, /api/health cache
     recentStore.js       localStorage "recent codes" (defensive everywhere)
     workspaceService.js  | linkService.js | noteService.js
-  components/            UI; see "UI conventions" below
+    backupService.js     export / restore of this browser's remembered codes
+  components/            UI; see "UI conventions" below (LiveDocument.jsx = live editor)
   app.css                all styles (tokens, mobile-first, dark mode)
 
 server/
@@ -146,6 +155,17 @@ server/
     records.js           load/require/mutate/list with lazy expiry purge
     workspaces.js | links.js | notes.js    domain logic
     store/               disk.js | blobs.js | index.js | mutex.js
+    access.js            team passphrase check (creating things only)
+    rateLimit.js         fixed-window per-address counters
+    pin.js               scrypt PIN hashing, unlock-cookie helpers
+    activity.js          bounded per-record activity log
+    noteVersions.js      saved earlier texts of a note (separate record)
+    zip.js               streaming ZIP writer (deflate, one file in memory at a time)
+  routes/pin.js          the shared PIN gate + /unlock + /pin routes
+
+test/                    node:test suites + helpers (npm test); one process per file
+.github/workflows/ci.yml lint + build + test on Node 20 and 22
+public/                  icons, manifest.webmanifest, sw.js (install only, caches nothing)
 
 netlify/functions/
   api.js                 Netlify-format handler -> loopback Express
@@ -168,6 +188,118 @@ touch the store directly for *file bytes*, which is intentional.
 - Expiry is enforced **lazily on access** (`records.js` → `loadRecord` deletes an
   expired record and reports it as absent). The scheduled/interval sweep only
   reclaims storage for codes nobody returns to, so a missed sweep is harmless
+
+## Access, limits and PINs
+
+All three are optional and configured by environment variable; with none set the app
+behaves exactly like the original share-code model.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `NETFILESHARE_ACCESS_KEY` | unset | Team passphrase. Needed to **create** workspaces, links and notes; **not** needed to use something you hold the code for. |
+| `NETFILESHARE_RATE_LIMIT` | `on` | `off` disables all limiting (tests do this). |
+| `NETFILESHARE_RATE_CREATE_PER_HOUR` | 60 | Creates per address. |
+| `NETFILESHARE_RATE_UPLOAD_PER_HOUR` | 300 | Upload/folder requests per address. |
+| `NETFILESHARE_RATE_MISS_PER_10_MIN` | 60 | Failed lookups (unknown codes, wrong PINs/passphrases) per address before it is shut out. |
+| `NETFILESHARE_TRUST_PROXY` | `loopback` | Whose `X-Forwarded-For` to believe. Leave it alone unless a real reverse proxy is in front. |
+| `NETFILESHARE_MAX_ZIP_MB` | 500 (20 on Netlify) | Largest folder ZIP. |
+
+Why the shapes are what they are:
+
+1. **The passphrase gates creation, not use.** Creating is what spends storage; using a
+   share code is decision 1. The client prompts once (`window.prompt`, like rename),
+   verifies it via `POST /api/access`, keeps it in localStorage, and retries.
+2. **Guessing codes is the attack, so misses are counted.** Every 404, wrong PIN and
+   wrong passphrase counts against the caller (`res.locals.miss`); over the limit they
+   get 429 *before* any record is read. A `pin_required` answer is deliberately **not** a
+   miss, otherwise listing a few locked items would lock you out.
+3. **The client address is not a header the caller controls.** `trust proxy` defaults to
+   `loopback`, and the Netlify function overwrites `X-Forwarded-For` with Netlify's own
+   `x-nf-client-connection-ip` / `context.ip` before forwarding. Test:
+   `test/ratelimit.test.js` and the forged-header check.
+4. **Counters are per process.** Exact on Node/Docker; on Netlify each function instance
+   counts separately, so treat it as abuse friction, not a hard quota.
+5. **PIN = cookie, not header.** A header cannot be sent by an `<a href>` download, an
+   `<img>` preview or a ZIP link. `POST /unlock` sets an `HttpOnly` cookie holding
+   `sha256(pinHash:code)`, so it cannot be forged and changing the PIN invalidates every
+   cookie already issued. The PIN is salted scrypt; the hash never leaves the server
+   (presenters expose only `hasPin`).
+6. **A locked item is not a missing item.** Lists load with `interactive: false`; a
+   `pin_required` answer becomes a locked placeholder with an **Unlock** button, so the
+   code is not pruned from the remembered list and there is no wall of prompts.
+7. Anyone who can open an item can set or clear its PIN, exactly as they can delete it.
+   The PIN protects against people who only have the code, not against someone already in.
+
+## Versions, activity, ZIP, backup, expiry warnings, install
+
+- **Version history** (`noteVersions.js`): earlier texts live in their own record
+  (`note-versions/<CODE>`), never in the note, so the live-edit poll does not load them.
+  Saved before a full replace, before a restore, every 2 minutes during live edits, and
+  **immediately before an edit that deletes a lot** (over 500 bytes and 30%). Max 20 per
+  note and 3 MB of text. A restore saves the text it replaces, so it is itself undoable.
+  Versions are deleted with the note, including when it expires lazily.
+- **Activity log** (`activity.js`): a bounded list *inside* the record (40 entries), so it
+  costs no extra storage call. It records what and when, **never who** (no accounts).
+  Bursts of the same kind collapse into one line with a count (`coalesce`).
+- **Folder ZIP** (`zip.js`): hand-written baseline ZIP (no ZIP64, no dependency), streamed
+  with one file in memory at a time. Capped by `NETFILESHARE_MAX_ZIP_MB` with a clear 413.
+  `test/zip.test.js` reads the result with an *independent* parser that checks CRCs.
+- **Per-file uploads**: the client sends one request per file. Netlify caps a whole
+  request near 6 MB, so sending files together could fail even when each was under the
+  4 MB limit. A partial failure reports "Uploaded N of M".
+- **Filenames are UTF-8**: multer defaults to latin1 and turned `ünï.txt` into mojibake;
+  `defParamCharset: 'utf8'` fixes it. Do not remove it.
+- **Backup/restore** (`backupService.js`): codes only, no content. Restoring probes each
+  code non-interactively and reports what expired. Six-character codes are shared by
+  workspaces and notes, so loose pasted codes are tried against both.
+- **Expiry warnings**: a banner and a red badge when something expires within
+  `min(24 h, lifetime/4)`, with a one-click Extend. Links are excluded (no extend API).
+- **Installable**: `public/manifest.webmanifest` + `sw.js`. The worker **caches nothing**
+  on purpose; do not add caching without thinking about stale code and live share codes.
+  It registers in production builds only, so it never sits in front of Vite.
+
+## Live editing (shared notes)
+
+A note can be switched to **live editing** (`isCollaborative`). Anyone with the code
+can then edit it together, which fits decision 1: the code is already full control.
+
+**How it works — near-live polling, not WebSockets.** Netlify Functions cannot hold a
+socket open, and the same code has to run on Node, Docker and Netlify, so there is no
+socket transport. Instead each editor repeatedly calls `POST /api/notes/<CODE>/sync`:
+
+- The client keeps `base`, the last text the server confirmed, and sends only the
+  **diff from base to what it has now** (`diff-match-patch` patch text), plus its
+  revision.
+- The server (`syncNote` in `server/lib/notes.js`) applies that patch fuzzily onto the
+  *current* text under the per-key lock, bumps `rev`, and returns the merged text.
+  Edits in different places merge; same-spot inserts both survive.
+- Anything the user typed while the request was in flight is re-applied on top of the
+  reply, and the caret is mapped through the change so remote edits above it do not
+  make it jump (`useLiveNote.js`).
+- A hunk whose surroundings were rewritten is dropped and counted in `rejected`; the UI
+  shows a notice with a **Copy my version** button. Never silently swallow it.
+
+Things that are easy to break:
+
+1. **Every request carries an `opId`**; the server remembers the last 40. A retry after
+   a lost response must not apply a patch twice (it would duplicate inserted text).
+2. **A patch reply always includes the text**, even if nothing changed. Otherwise a
+   fully rejected patch leaves `rev` alone and the client would resend it forever.
+3. **Presence** is a `clientId → lastSeen` map on the note record, refreshed at most
+   every 6 s per editor and counted within 15 s. It stores no names (there is no login).
+   Viewers poll with `viewer: true` and are not counted.
+4. **Full-replace `PATCH` also bumps `rev`**, so open editors pick it up. The in-card
+   "Edit" form is hidden for live notes; they are edited through the live editor only.
+5. **Turning it off** makes `/sync` answer 409; editors stop polling and say so.
+6. The JSON body limit is `3 × MAX_NOTE_BYTES` because patch text percent-encodes
+   newlines and non-ASCII. `liveSync.js` and `notes.js` must keep the same
+   `Match_*` settings.
+7. **Polling costs function invocations** on Netlify. The interval is 1.5 s while
+   anyone is active, backing off to 5 s then 12 s when idle, 15 s in a hidden tab, and
+   2.5× slower for read-only viewers. Ten people editing continuously is on the order
+   of 20k invocations an hour; check the plan's quota before leaving editors open.
+8. Same accepted limit as decision 3: the lock is per process, so two Netlify instances
+   writing one note at the same moment can lose an update. Fine at 5–10 users.
 
 ## Netlify specifics
 
@@ -247,6 +379,7 @@ Points that are easy to break:
 ## Commands
 
 ```bash
+npm test             # node:test suites in test/ (no browser needed)
 npm install          # also regenerates the stale lockfile (see below)
 npm run dev:all      # Vite + API together; Vite proxies /api and /s to :8787
 npm run lint
@@ -259,7 +392,9 @@ npm run docker:up    # app + API on :8787 with persistent volumes
 ## Current state — read this
 
 **Verified on Node 22:** `npm install`, `npm run lint` (0 errors; 5 `set-state-in-effect`
-warnings) and `npm run build` all succeed. An end-to-end browser run (Edge via
+warnings), `npm run build` and `npm test` all succeed. `npm test` is server-side only and
+runs in CI on Node 20 and 22; the browser flows were checked by hand with Edge via
+playwright-core and are **not** automated in the repo. An end-to-end browser run (Edge via
 playwright-core) passed: create workspace, upload, download, folder create, short link
 create + 302 redirect, `javascript:` URL rejected, note create + render with script
 stripped, and an oversize upload returning 413.
@@ -294,8 +429,10 @@ Asked and answered during the build:
 
 ## Next steps, in the order they will actually matter
 
-1. Presigned direct-to-storage uploads, if 4 MB turns out to pinch.
-3. SQLite or Postgres for metadata, if concurrent writes ever actually collide.
-4. ZIP download of a whole folder.
-5. Per-workspace storage quotas.
-6. Activity logging for uploads, deletes and expiry changes.
+1. Presigned direct-to-storage uploads, if 4 MB turns out to pinch. Or run the Docker
+   build, where the cap is 100 MB. This is mostly a hosting decision.
+2. SQLite or Postgres for metadata, if concurrent writes ever actually collide. This
+   would also make the per-process rate limits and PIN cache exact across instances.
+3. Automated browser tests (playwright) for the flows currently checked by hand.
+4. Per-workspace storage quotas.
+5. Edge rate limiting in front of Netlify, if the per-instance counters prove too loose.

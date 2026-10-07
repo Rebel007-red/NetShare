@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { parseRoute, replacePath } from './lib/router';
+import BackupPanel from './components/BackupPanel';
 import LinkManager from './components/LinkManager';
 import NoteManager from './components/NoteManager';
 import NoteViewer from './components/NoteViewer';
@@ -72,6 +73,13 @@ export default function App() {
   // renders as a placeholder on first paint.
   const lifetimeLabel = useMemo(
     () => formatDuration(limits?.lifetimeMs ?? DEFAULT_LIFETIME_MS),
+    [limits],
+  );
+
+  // "Expiring soon" is a day, or a quarter of the lifetime if that is shorter, so
+  // a deployment with a very short lifetime does not warn about everything.
+  const soonMs = useMemo(
+    () => Math.min(24 * 60 * 60 * 1000, (limits?.lifetimeMs ?? DEFAULT_LIFETIME_MS) / 4),
     [limits],
   );
 
@@ -488,6 +496,101 @@ export default function App() {
     }
   };
 
+  const handleToggleNoteCollaboration = async (code, nextValue) => {
+    try {
+      await notes.setNoteCollaboration(code, nextValue);
+      await reloadNotes();
+      notify({
+        type: 'success',
+        title: nextValue ? 'Live editing on' : 'Live editing off',
+        message: nextValue
+          ? 'Anyone with the link can now edit this note together.'
+          : 'The note is read-only again.',
+      });
+    } catch (error) {
+      notify({ type: 'error', title: 'Update failed', message: errorMessage(error, 'Unable to update note.') });
+    }
+  };
+
+  /* ------------------------------------------------- extend, unlock and PIN */
+
+  const handleExtendManyWorkspaces = async (codes) => {
+    try {
+      await Promise.all(codes.map((code) => workspaces.extendWorkspace(code)));
+      await reloadWorkspaces();
+      notify({ type: 'success', title: 'Extended', message: `Extended ${codes.length} by ${lifetimeLabel}.` });
+    } catch (error) {
+      notify({ type: 'error', title: 'Extend failed', message: errorMessage(error, 'Unable to extend workspaces.') });
+    }
+  };
+
+  const handleExtendManyNotes = async (codes) => {
+    try {
+      await Promise.all(codes.map((code) => notes.extendNote(code)));
+      await reloadNotes();
+      notify({ type: 'success', title: 'Extended', message: `Extended ${codes.length} by ${lifetimeLabel}.` });
+    } catch (error) {
+      notify({ type: 'error', title: 'Extend failed', message: errorMessage(error, 'Unable to extend notes.') });
+    }
+  };
+
+  const handleUnlockWorkspace = async (code) => {
+    try {
+      if (await workspaces.unlockWorkspace(code)) await reloadWorkspaces();
+    } catch (error) {
+      notify({ type: 'error', title: 'Could not unlock', message: errorMessage(error, 'That PIN did not work.') });
+    }
+  };
+
+  const handleUnlockNote = async (code) => {
+    try {
+      if (await notes.unlockNote(code)) await reloadNotes();
+    } catch (error) {
+      notify({ type: 'error', title: 'Could not unlock', message: errorMessage(error, 'That PIN did not work.') });
+    }
+  };
+
+  /** Returns a PIN to set, or null to clear, or undefined if the person backed out. */
+  const chooseNewPin = (hasPin, noun) => {
+    if (hasPin) {
+      return window.confirm(`Remove the PIN? Anyone with the code will be able to open this ${noun}.`) ? null : undefined;
+    }
+    const entered = window.prompt(`Choose a PIN (4 to 32 characters). Anyone opening this ${noun} will need it.`);
+    return entered ? entered : undefined;
+  };
+
+  const handleSetWorkspacePin = async () => {
+    if (!workspace) return;
+    const pin = chooseNewPin(workspace.hasPin, 'workspace');
+    if (pin === undefined) return;
+    try {
+      applyWorkspace(await workspaces.setWorkspacePin(workspace.code, pin), {
+        type: 'success',
+        title: pin ? 'PIN set' : 'PIN removed',
+        message: pin ? 'People opening this workspace will be asked for it.' : 'The workspace opens with just its code again.',
+      });
+      await reloadWorkspaces();
+    } catch (error) {
+      notify({ type: 'error', title: 'Update failed', message: errorMessage(error, 'Unable to change the PIN.') });
+    }
+  };
+
+  const handleSetNotePin = async (code, hasPin) => {
+    const pin = chooseNewPin(hasPin, 'note');
+    if (pin === undefined) return;
+    try {
+      await notes.setNotePin(code, pin);
+      await reloadNotes();
+      notify({
+        type: 'success',
+        title: pin ? 'PIN set' : 'PIN removed',
+        message: pin ? 'People opening this note will be asked for it.' : 'The note opens with just its code again.',
+      });
+    } catch (error) {
+      notify({ type: 'error', title: 'Update failed', message: errorMessage(error, 'Unable to change the PIN.') });
+    }
+  };
+
   /** Pulls somebody else's note into this browser's remembered list. */
   const handleOpenNoteCode = async (code) => {
     try {
@@ -594,6 +697,7 @@ export default function App() {
                 await handleUpload(event.dataTransfer.files);
               }}
               onFilePicker={() => openFilePicker({ code: workspace.code, path: currentPath })}
+              onSetPin={handleSetWorkspacePin}
               onToast={notify}
             />
           ) : (
@@ -615,6 +719,9 @@ export default function App() {
               onExtendWorkspace={handleExtendWorkspace}
               onToggleWorkspacePersistent={handleTogglePersistence}
               onToast={notify}
+              soonMs={soonMs}
+              onExtendMany={handleExtendManyWorkspaces}
+              onUnlock={handleUnlockWorkspace}
             />
           )
         ) : null}
@@ -640,10 +747,20 @@ export default function App() {
             onDelete={handleDeleteNote}
             onExtend={handleExtendNote}
             onTogglePersistent={handleToggleNotePersistence}
+            onToggleCollaborative={handleToggleNoteCollaboration}
+            onSetPin={handleSetNotePin}
+            onUnlock={handleUnlockNote}
+            onExtendMany={handleExtendManyNotes}
+            soonMs={soonMs}
             onOpenCode={handleOpenNoteCode}
             onToast={notify}
           />
         ) : null}
+
+        <BackupPanel
+          onRestored={() => Promise.all([reloadWorkspaces(), reloadLinks(), reloadNotes()])}
+          onToast={notify}
+        />
       </div>
     </>
   );

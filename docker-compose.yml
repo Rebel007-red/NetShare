@@ -8,6 +8,8 @@ services:
       - "8787:8787"
     environment:
       NETFILESHARE_PORT: 8787
+      # Optional: a team passphrase needed to create workspaces, links and notes.
+      # NETFILESHARE_ACCESS_KEY: change-me
       NETFILESHARE_STORE: disk
       # Self-hosted runs are not behind the Netlify Function body limit.
       NETFILESHARE_MAX_UPLOAD_MB: 100

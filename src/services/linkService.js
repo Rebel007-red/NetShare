@@ -22,6 +22,23 @@ export function getShortUrl(link) {
   return new URL(`/s/${slug}`, window.location.origin).toString();
 }
 
+/** Slugs this browser remembers, for the backup panel. */
+export function rememberedLinkSlugs() {
+  return recent.list();
+}
+
+export function rememberLinkSlug(slug) {
+  recent.remember(slug);
+}
+
+export async function getLink(slug) {
+  try {
+    return await request(linkUrl(slug), { interactive: false });
+  } catch {
+    return null;
+  }
+}
+
 export async function listLinks() {
   const slugs = recent.list();
   if (slugs.length === 0) return [];

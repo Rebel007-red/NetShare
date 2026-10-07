@@ -1,9 +1,22 @@
 import express from 'express';
-import { MAX_NOTE_BYTES, describeLimits } from './lib/config.js';
-import { HttpError } from './lib/errors.js';
+import { accessKeyMatches, requireAccessKey } from './lib/access.js';
+import {
+  MAX_NOTE_BYTES,
+  RATE_CREATE_PER_HOUR,
+  RATE_LIMIT_ENABLED,
+  RATE_MISS_PER_10_MIN,
+  RATE_UPLOAD_PER_HOUR,
+  TRUST_PROXY,
+  describeLimits,
+} from './lib/config.js';
+import { HttpError, tooManyRequests, unauthorized } from './lib/errors.js';
+import { clientKey, createLimiter, limitRequests } from './lib/rateLimit.js';
 import { isValidSlug, normalizeSlug } from './lib/ids.js';
 import { resolveForRedirect } from './lib/links.js';
+import { mutateNoteRecord, noteKey, presentNote } from './lib/notes.js';
+import { presentWorkspace, updateWorkspace, workspaceKey } from './lib/workspaces.js';
 import linksRouter from './routes/links.js';
+import { createPinSupport } from './routes/pin.js';
 import notesRouter from './routes/notes.js';
 import workspacesRouter from './routes/workspaces.js';
 
@@ -35,14 +48,72 @@ export function createApp() {
   const app = express();
 
   app.disable('x-powered-by');
-  app.set('trust proxy', true);
+  app.set('trust proxy', TRUST_PROXY);
   // Derived from the note ceiling so raising NETFILESHARE_MAX_NOTE_KB does not
-  // start failing at the body parser instead of the validator.
-  app.use(express.json({ limit: MAX_NOTE_BYTES + 64 * 1024 }));
+  // start failing at the body parser instead of the validator. The multiplier
+  // covers live-edit patches, which percent-encode newlines and non-ASCII text.
+  app.use(express.json({ limit: MAX_NOTE_BYTES * 3 + 64 * 1024 }));
+
+  // Counters are per app instance so tests (and the Netlify function) start clean.
+  const createLimit = createLimiter({ windowMs: 60 * 60 * 1000, max: RATE_CREATE_PER_HOUR });
+  const uploadLimit = createLimiter({ windowMs: 60 * 60 * 1000, max: RATE_UPLOAD_PER_HOUR });
+  const missLimit = createLimiter({ windowMs: 10 * 60 * 1000, max: RATE_MISS_PER_10_MIN });
+
+  /**
+   * Share codes are the only access key, so guessing them is the attack. Every
+   * failed lookup (404, wrong PIN, wrong passphrase) counts against the caller,
+   * and once over the limit they are refused before any record is touched.
+   */
+  app.use(['/api/workspaces', '/api/notes', '/api/links', '/api/access', '/s'], (req, res, next) => {
+    if (!RATE_LIMIT_ENABLED) return next();
+    const key = clientKey(req);
+    const wait = missLimit.blockedFor(key);
+    if (wait > 0) return next(tooManyRequests('Too many failed attempts. Try again later.', wait));
+    res.on('finish', () => {
+      if (res.statusCode === 404 || res.locals.miss) missLimit.hit(key);
+    });
+    return next();
+  });
 
   app.get('/api/health', (_req, res) => {
     res.json({ ok: true, ...describeLimits() });
   });
+
+  app.post('/api/access', (req, res, next) => {
+    if (accessKeyMatches(req.body?.key)) return res.status(204).end();
+    res.locals.miss = true;
+    return next(unauthorized('That passphrase is not right', 'access_required'));
+  });
+
+  // Creating things spends storage, so it is the part that is gated and limited.
+  app.post(
+    ['/api/workspaces', '/api/links', '/api/notes'],
+    limitRequests(createLimit, 'Too many new items from this address. Try again later.'),
+    requireAccessKey,
+  );
+  app.post(
+    ['/api/workspaces/:code/files', '/api/workspaces/:code/folders'],
+    limitRequests(uploadLimit, 'Too many uploads from this address. Try again later.'),
+  );
+
+  // Optional per-item PIN. The gate runs first so a locked item answers
+  // pin_required before any route touches it.
+  const workspacePin = createPinSupport({
+    keyFor: workspaceKey,
+    mutate: updateWorkspace,
+    present: presentWorkspace,
+    label: 'workspace',
+  });
+  const notePin = createPinSupport({
+    keyFor: noteKey,
+    mutate: mutateNoteRecord,
+    present: presentNote,
+    label: 'note',
+  });
+  app.use('/api/workspaces/:code', workspacePin.gate);
+  app.use('/api/notes/:code', notePin.gate);
+  app.use('/api/workspaces', workspacePin.router);
+  app.use('/api/notes', notePin.router);
 
   app.use('/api/workspaces', workspacesRouter);
   app.use('/api/links', linksRouter);
@@ -89,7 +160,8 @@ export function createApp() {
       res.destroy();
       return;
     }
-    res.status(status).json({ message });
+    if (error?.retryAfterSeconds) res.setHeader('Retry-After', String(error.retryAfterSeconds));
+    res.status(status).json({ message, ...(error instanceof HttpError && error.code ? { code: error.code } : {}) });
   });
 
   return app;

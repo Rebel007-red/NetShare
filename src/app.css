@@ -687,3 +687,168 @@ textarea { padding: 8px 10px; }
   .nfs-note-form__row:has(> :nth-child(3)) { grid-template-columns: minmax(0, 1fr) 160px 160px; }
 }
 input[type='datetime-local'] { min-width: 0; }
+
+/* ------------------------------------------------------------ live editing */
+
+.nfs-shell--note { width: min(1100px, 100%); }
+
+.nfs-live { display: grid; gap: 10px; min-width: 0; }
+
+.nfs-live__bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-height: 32px; }
+
+.nfs-live__status { display: inline-flex; align-items: center; gap: 7px; font-size: 0.85rem; color: var(--muted); }
+.nfs-live__dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); }
+.nfs-live__status--saving .nfs-live__dot { background: #d9a400; animation: nfs-pulse 1s ease-in-out infinite; }
+.nfs-live__status--offline { color: var(--danger); }
+.nfs-live__status--offline .nfs-live__dot { background: var(--danger); }
+.nfs-live__status--disabled .nfs-live__dot,
+.nfs-live__status--gone .nfs-live__dot { background: var(--muted); }
+
+@keyframes nfs-pulse { 50% { opacity: 0.35; } }
+
+.nfs-live__editors,
+.nfs-live-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+.nfs-live-badge { border-radius: 6px; text-transform: uppercase; letter-spacing: 0.03em; }
+
+.nfs-live__size { margin-left: auto; color: var(--muted); font-size: 0.8rem; }
+.nfs-live__size--over { color: var(--danger); font-weight: 700; }
+.nfs-live__view { margin-left: auto; }
+
+.nfs-live__notice {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--text);
+  font-size: 0.9rem;
+}
+.nfs-live__notice-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+
+.nfs-live__tabs { justify-self: start; }
+
+.nfs-live__panes { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; }
+
+.nfs-live__textarea {
+  width: 100%;
+  min-height: 55vh;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.55;
+  resize: vertical;
+  tab-size: 2;
+}
+.nfs-live__textarea--prose { font-family: inherit; font-size: 16px; line-height: 1.6; }
+
+.nfs-live__preview {
+  min-width: 0;
+  min-height: 55vh;
+  max-height: 75vh;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-2);
+}
+.nfs-live__preview .nfs-note-content { max-height: none; }
+
+/* One pane at a time on phones; the tabs choose which. */
+@media (max-width: 899px) {
+  .nfs-live__panes--split[data-pane='write'] .nfs-live__preview { display: none; }
+  .nfs-live__panes--split[data-pane='preview'] .nfs-live__textarea { display: none; }
+}
+
+@media (min-width: 900px) {
+  .nfs-live__tabs { display: none; }
+  .nfs-live__panes--split { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: start; }
+  .nfs-live__textarea { min-height: 60vh; height: 60vh; max-height: 75vh; }
+  .nfs-live__preview { height: 60vh; max-height: 75vh; }
+}
+
+/* ------------------------------------------------ expiry, PIN, activity, backup */
+
+.nfs-workspace-status--soon { background: var(--danger-soft); color: var(--danger); }
+
+.nfs-pin-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  margin-left: 8px;
+  padding: 0 7px;
+  border-radius: 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  vertical-align: middle;
+}
+
+.nfs-locked { grid-template-columns: minmax(0, 1fr); border-style: dashed; }
+
+.nfs-expiry-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  margin-bottom: 10px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--danger-soft);
+  font-size: 0.9rem;
+}
+
+.nfs-activity summary,
+.nfs-backup summary { cursor: pointer; font-weight: 600; color: var(--accent-strong); }
+.nfs-activity__empty { color: var(--muted); font-size: 0.9rem; margin-top: 8px; }
+.nfs-activity__list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+.nfs-activity__list li { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 0.88rem; }
+.nfs-activity__list time { color: var(--muted); min-width: 9.5em; }
+.nfs-activity__list span { overflow-wrap: anywhere; }
+
+.nfs-history {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.nfs-history__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.nfs-history__head h2 { font-size: 1.05rem; }
+.nfs-history__list { list-style: none; margin: 0; padding: 0; display: grid; gap: 10px; }
+.nfs-history__item { display: grid; gap: 6px; padding-top: 10px; border-top: 1px solid var(--border); }
+.nfs-history__meta { display: flex; flex-wrap: wrap; gap: 2px 12px; color: var(--muted); font-size: 0.82rem; }
+.nfs-history__preview { overflow-wrap: anywhere; font-size: 0.9rem; max-height: 4.2em; overflow: hidden; }
+.nfs-history__actions { display: flex; gap: 8px; }
+
+.nfs-backup { margin-top: 4px; padding: 12px 14px; border: 1px dashed var(--border); border-radius: var(--radius); }
+.nfs-backup__body { display: grid; gap: 10px; margin-top: 10px; }
+.nfs-backup__row { display: flex; flex-wrap: wrap; gap: 8px; }
+.nfs-backup__message { font-size: 0.88rem; color: var(--muted); overflow-wrap: anywhere; }
+.nfs-backup__file { cursor: pointer; }
+
+.nfs-workspace-head h1 { display: flex; flex-wrap: wrap; align-items: center; }
+
+/* More actions than fit beside the title: keep the title whole and put them underneath. */
+@media (min-width: 720px) {
+  .nfs-workspace-head { grid-template-columns: minmax(0, 1fr); }
+  .nfs-workspace-head__side { justify-items: start; }
+  .nfs-workspace-head__actions { justify-content: flex-start; }
+}

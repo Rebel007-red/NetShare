@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Full-bleed background and a smaller glyph: launchers crop maskable icons to a circle or squircle. -->
+  <rect width="512" height="512" fill="#0f766e"/>
+  <g transform="translate(256 256) scale(0.68) translate(-256 -270)" fill="none" stroke="#ffffff" stroke-width="40" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M256 330V150"/>
+    <path d="M186 216l70-70 70 70"/>
+    <path d="M148 330v32a32 32 0 0 0 32 32h152a32 32 0 0 0 32-32v-32"/>
+  </g>
+</svg>

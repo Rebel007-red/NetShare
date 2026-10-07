@@ -1,3 +1,4 @@
+import { presentActivity, withActivity } from './activity.js';
 import { WORKSPACE_LIFETIME_MS } from './config.js';
 import { conflict, notFound } from './errors.js';
 import { generateCode, makeId, normalizeCode } from './ids.js';
@@ -37,6 +38,8 @@ export function presentWorkspace(workspace) {
     updatedAt: workspace.updatedAt,
     expiresAt: workspace.expiresAt,
     isPersistent: Boolean(workspace.isPersistent),
+    hasPin: Boolean(workspace.pinHash),
+    activity: presentActivity(workspace),
     items: sortItems(workspace.items ?? []).map((item) => ({
       id: item.id,
       type: item.type,
@@ -83,8 +86,9 @@ export async function createWorkspace({ name, isPersistent }) {
       items: [],
     };
 
-    await store.putRecord(key, workspace);
-    return workspace;
+    const logged = withActivity(workspace, 'created');
+    await store.putRecord(key, logged);
+    return logged;
   }
 
   throw conflict('Could not allocate a workspace code, please try again');
@@ -100,12 +104,14 @@ export async function deleteWorkspace(code) {
   return true;
 }
 
-export function touch(workspace, changes) {
-  return { ...workspace, ...changes, updatedAt: toIso(now()) };
+/** Applies changes and bumps updatedAt. `event` is `[type, detail]` for the activity log. */
+export function touch(workspace, changes, event) {
+  const next = { ...workspace, ...changes, updatedAt: toIso(now()) };
+  return event ? withActivity(next, event[0], event[1]) : next;
 }
 
 export function extendWorkspace(workspace) {
-  return touch(workspace, { expiresAt: extendFrom(workspace, WORKSPACE_LIFETIME_MS) });
+  return touch(workspace, { expiresAt: extendFrom(workspace, WORKSPACE_LIFETIME_MS) }, ['extended']);
 }
 
 export function setPersistence(workspace, isPersistent) {
@@ -113,7 +119,7 @@ export function setPersistence(workspace, isPersistent) {
     isPersistent,
     // Leaving permanent mode restarts the clock rather than reviving a past deadline.
     expiresAt: isPersistent ? workspace.expiresAt : toIso(now() + WORKSPACE_LIFETIME_MS),
-  });
+  }, [isPersistent ? 'kept' : 'unkept']);
 }
 
 export function findItem(workspace, itemPath) {

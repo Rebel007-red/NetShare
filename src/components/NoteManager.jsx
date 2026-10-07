@@ -1,12 +1,20 @@
 import { useEffect, useMemo, useState } from 'react';
-import { formatBytes, formatDateTime, getRemainingLabel } from '../services/apiClient';
+import { formatBytes, formatDateTime, getRemainingLabel, isExpiringSoon } from '../services/apiClient';
+import ExpiryBanner from './ExpiryBanner';
 import { NOTE_FORMATS, NOTE_LANGUAGES, getDownloadUrl, getNoteShareUrl } from '../services/noteService';
 import NoteContent from './NoteContent';
 import QrPanel from './QrPanel';
 import ShareCodeField from './ShareCodeField';
 import { DownloadIcon, OpenIcon, RemoveIcon } from './icons';
 
-const EMPTY_DRAFT = { title: '', content: '', format: 'markdown', language: 'plaintext', isPersistent: false };
+const EMPTY_DRAFT = {
+  title: '',
+  content: '',
+  format: 'markdown',
+  language: 'plaintext',
+  isPersistent: false,
+  isCollaborative: false,
+};
 
 function NoteEditorFields({ draft, onChange, maxBytes }) {
   const bytes = useMemo(() => new TextEncoder().encode(draft.content).length, [draft.content]);
@@ -63,8 +71,9 @@ function NoteEditorFields({ draft, onChange, maxBytes }) {
   );
 }
 
-function NoteCard({ note, onDelete, onExtend, onTogglePersistent, onUpdate, onToast, maxBytes }) {
+function NoteCard({ note, onDelete, onExtend, onTogglePersistent, onToggleCollaborative, onSetPin, onUpdate, onToast, maxBytes, soonMs }) {
   const shareUrl = getNoteShareUrl(note);
+  const soon = isExpiringSoon(note, soonMs);
   const [view, setView] = useState('rendered');
   const [showQr, setShowQr] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
@@ -106,14 +115,22 @@ function NoteCard({ note, onDelete, onExtend, onTogglePersistent, onUpdate, onTo
           <div className="nfs-note-card__badges">
             <span className="nfs-code-pill">{note.code}</span>
             <span className="nfs-note-card__badge">{note.format}</span>
+            {note.isCollaborative ? <span className="nfs-live-badge">Live</span> : null}
             {note.format === 'code' && note.language ? (
               <span className="nfs-note-card__badge">{note.language}</span>
             ) : null}
-            <span className="nfs-workspace-status">{getRemainingLabel(note)}</span>
+            <span className={`nfs-workspace-status${soon ? ' nfs-workspace-status--soon' : ''}`}>
+              {getRemainingLabel(note)}
+            </span>
+            {note.hasPin ? <span className="nfs-pin-badge">PIN</span> : null}
           </div>
         </div>
         <div className="nfs-note-card__controls">
-          <button type="button" className="nfs-btn nfs-btn--ghost nfs-btn--compact" onClick={() => onExtend(note.code)}>
+          <button
+            type="button"
+            className={`nfs-btn nfs-btn--compact ${soon ? 'nfs-btn--primary' : 'nfs-btn--ghost'}`}
+            onClick={() => onExtend(note.code)}
+          >
             Extend
           </button>
           <label className="nfs-workspace-card__toggle">
@@ -124,13 +141,32 @@ function NoteCard({ note, onDelete, onExtend, onTogglePersistent, onUpdate, onTo
             />
             <span>Keep</span>
           </label>
-          <button
-            type="button"
-            className={`nfs-btn nfs-btn--ghost nfs-btn--compact${isEditing ? ' nfs-btn--active' : ''}`}
-            onClick={() => setIsEditing((value) => !value)}
-          >
-            {isEditing ? 'Close editor' : 'Edit'}
-          </button>
+          <label className="nfs-workspace-card__toggle" title="Let anyone with the link edit this note together">
+            <input
+              type="checkbox"
+              checked={Boolean(note.isCollaborative)}
+              onChange={(event) => onToggleCollaborative(note.code, event.target.checked)}
+            />
+            <span>Live</span>
+          </label>
+          {note.isCollaborative ? (
+            <a
+              className="nfs-btn nfs-btn--ghost nfs-btn--compact"
+              href={`/note/${note.code}?edit=1`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Edit live
+            </a>
+          ) : (
+            <button
+              type="button"
+              className={`nfs-btn nfs-btn--ghost nfs-btn--compact${isEditing ? ' nfs-btn--active' : ''}`}
+              onClick={() => setIsEditing((value) => !value)}
+            >
+              {isEditing ? 'Close editor' : 'Edit'}
+            </button>
+          )}
           <button
             type="button"
             className={`nfs-btn nfs-btn--ghost nfs-btn--compact${showQr ? ' nfs-btn--active' : ''}`}
@@ -138,6 +174,9 @@ function NoteCard({ note, onDelete, onExtend, onTogglePersistent, onUpdate, onTo
             aria-expanded={showQr}
           >
             QR
+          </button>
+          <button type="button" className="nfs-btn nfs-btn--ghost nfs-btn--compact" onClick={() => onSetPin(note.code, note.hasPin)}>
+            {note.hasPin ? 'Remove PIN' : 'PIN'}
           </button>
           <button
             type="button"
@@ -159,7 +198,7 @@ function NoteCard({ note, onDelete, onExtend, onTogglePersistent, onUpdate, onTo
           : { type: 'error', title: 'Copy failed', message: 'Copy the link from the field instead.' })}
       />
 
-      {isEditing ? (
+      {isEditing && !note.isCollaborative ? (
         <div className="nfs-note-card__editor">
           <NoteEditorFields
             draft={draft}
@@ -221,6 +260,25 @@ function NoteCard({ note, onDelete, onExtend, onTogglePersistent, onUpdate, onTo
   );
 }
 
+function LockedNoteCard({ note, onUnlock }) {
+  return (
+    <article className="nfs-note-card nfs-locked">
+      <div className="nfs-note-card__identity">
+        <h3>{note.title}</h3>
+        <div className="nfs-note-card__badges">
+          <span className="nfs-code-pill">{note.code}</span>
+          <span className="nfs-pin-badge">PIN</span>
+        </div>
+      </div>
+      <div>
+        <button type="button" className="nfs-btn nfs-btn--secondary nfs-btn--compact" onClick={() => onUnlock(note.code)}>
+          Unlock
+        </button>
+      </div>
+    </article>
+  );
+}
+
 export default function NoteManager({
   notes,
   isLoading,
@@ -229,6 +287,11 @@ export default function NoteManager({
   onDelete,
   onExtend,
   onTogglePersistent,
+  onToggleCollaborative,
+  onSetPin,
+  onUnlock,
+  onExtendMany,
+  soonMs,
   onUpdate,
   onOpenCode,
   onToast,
@@ -236,6 +299,7 @@ export default function NoteManager({
   const [draft, setDraft] = useState(EMPTY_DRAFT);
   const [isCreating, setIsCreating] = useState(false);
   const [openCode, setOpenCode] = useState('');
+  const expiring = notes.filter((item) => !item.locked && isExpiringSoon(item, soonMs));
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -248,6 +312,7 @@ export default function NoteManager({
       format: draft.format,
       language: draft.format === 'code' ? draft.language : null,
       isPersistent: draft.isPersistent,
+      isCollaborative: draft.isCollaborative,
     });
     setIsCreating(false);
     if (ok) setDraft(EMPTY_DRAFT);
@@ -299,6 +364,14 @@ export default function NoteManager({
               />
               <span>Never expires</span>
             </label>
+            <label className="nfs-workspace-card__toggle" title="Let anyone with the link edit this note together">
+              <input
+                type="checkbox"
+                checked={draft.isCollaborative}
+                onChange={(event) => setDraft((current) => ({ ...current, isCollaborative: event.target.checked }))}
+              />
+              <span>Live editing</span>
+            </label>
             <button type="submit" className="nfs-btn nfs-btn--primary" disabled={isCreating || !draft.content.trim()}>
               {isCreating ? 'Creating' : 'Create note'}
             </button>
@@ -314,13 +387,21 @@ export default function NoteManager({
           </div>
         </div>
 
+        <ExpiryBanner
+          count={expiring.length}
+          noun="note"
+          onExtendAll={() => onExtendMany(expiring.map((item) => item.code))}
+        />
+
         {isLoading ? (
           <div className="nfs-recent__empty">Loading notes…</div>
         ) : notes.length === 0 ? (
           <div className="nfs-recent__empty">No notes yet. Create one above.</div>
         ) : (
           <div className="nfs-note-grid">
-            {notes.map((note) => (
+            {notes.map((note) => (note.locked ? (
+              <LockedNoteCard key={note.code} note={note} onUnlock={onUnlock} />
+            ) : (
               <NoteCard
                 key={note.id ?? note.code}
                 note={note}
@@ -328,10 +409,13 @@ export default function NoteManager({
                 onDelete={onDelete}
                 onExtend={onExtend}
                 onTogglePersistent={onTogglePersistent}
+                onToggleCollaborative={onToggleCollaborative}
+                onSetPin={onSetPin}
+                soonMs={soonMs}
                 onUpdate={onUpdate}
                 onToast={onToast}
               />
-            ))}
+            )))}
           </div>
         )}
       </section>

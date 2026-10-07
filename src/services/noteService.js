@@ -1,4 +1,4 @@
-import { request } from './apiClient.js';
+import { request, unlockItem } from './apiClient.js';
 import { createRecentStore } from './recentStore.js';
 
 const RECENT_NOTES_KEY = 'netfileshare-recent-notes';
@@ -67,10 +67,52 @@ export async function listNotes() {
   const codes = recent.list();
   if (codes.length === 0) return [];
 
-  const resolved = await Promise.all(codes.map((code) => getNote(code)));
+  // A PIN-protected note answers 401. Keep it as a locked placeholder rather than
+  // forgetting a note that still exists.
+  const resolved = await Promise.all(codes.map(async (code) => {
+    try {
+      return await request(noteUrl(code), { interactive: false });
+    } catch (error) {
+      return error?.code === 'pin_required' ? lockedNote(code) : null;
+    }
+  }));
   const notes = resolved.filter(Boolean);
   recent.replace(notes.map((note) => note.code));
   return notes;
+}
+
+function lockedNote(code) {
+  return { code, title: 'Protected note', locked: true, content: '', format: 'text', isPersistent: true };
+}
+
+export function unlockNote(code) {
+  return unlockItem('note', normalizeCode(code));
+}
+
+export async function setNotePin(code, pin) {
+  return remember(await request(noteUrl(code, '/pin'), { method: 'POST', json: { pin } }));
+}
+
+export async function listVersions(code) {
+  const { versions } = await request(noteUrl(code, '/versions'));
+  return versions;
+}
+
+export function getVersion(code, id) {
+  return request(noteUrl(code, `/versions/${encodeURIComponent(id)}`));
+}
+
+export async function restoreVersion(code, id) {
+  return remember(await request(noteUrl(code, `/versions/${encodeURIComponent(id)}/restore`), { method: 'POST' }));
+}
+
+/** Codes this browser remembers, for the backup panel. */
+export function rememberedNoteCodes() {
+  return recent.list();
+}
+
+export function rememberNoteCode(code) {
+  recent.remember(code);
 }
 
 export async function getNote(code, { countView = false } = {}) {
@@ -90,11 +132,30 @@ export async function fetchNoteOrThrow(code) {
   return request(noteUrl(normalized, '?countView=1'));
 }
 
-export async function createNote({ title, content, format = 'markdown', language = null, isPersistent = false }) {
+export async function createNote({
+  title,
+  content,
+  format = 'markdown',
+  language = null,
+  isPersistent = false,
+  isCollaborative = false,
+}) {
   return remember(await request('/api/notes', {
     method: 'POST',
-    json: { title, content, format, language, isPersistent },
+    json: { title, content, format, language, isPersistent, isCollaborative },
   }));
+}
+
+export async function setNoteCollaboration(code, isCollaborative) {
+  return remember(await request(noteUrl(code), {
+    method: 'PATCH',
+    json: { isCollaborative: Boolean(isCollaborative) },
+  }));
+}
+
+/** One live-editing round trip: sends a patch (or just polls) and returns the merged state. */
+export async function syncNote(code, payload) {
+  return request(noteUrl(code, '/sync'), { method: 'POST', json: payload });
 }
 
 export async function updateNote(code, changes) {

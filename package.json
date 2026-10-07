@@ -17,10 +17,12 @@
     "preview": "vite preview",
     "server": "node server/index.js",
     "start:all": "concurrently \"npm run server\" \"npm run dev -- --host 0.0.0.0\"",
-    "start:prod": "npm run build && npm run server"
+    "start:prod": "npm run build && npm run server",
+    "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "@netlify/blobs": "^8.1.1",
+    "diff-match-patch": "^1.0.5",
     "dompurify": "^3.2.4",
     "express": "^5.1.0",
     "highlight.js": "^11.11.1",

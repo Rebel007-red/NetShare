@@ -5,7 +5,9 @@ import {
   getChildren,
   getRemainingLabel,
   getWorkspaceStats,
+  getZipUrl,
 } from '../services/workspaceService';
+import ActivityLog from './ActivityLog';
 import ShareCodeField from './ShareCodeField';
 import { DownloadIcon, FileIcon, FolderIcon, RemoveIcon, RenameIcon } from './icons';
 
@@ -13,8 +15,8 @@ function WorkspaceStats({ workspace }) {
   const stats = getWorkspaceStats(workspace);
   return (
     <div className="nfs-stats">
-      <div><strong>{stats.files}</strong><span>Files</span></div>
-      <div><strong>{stats.folders}</strong><span>Folders</span></div>
+      <div><strong>{stats.files}</strong><span>{stats.files === 1 ? 'File' : 'Files'}</span></div>
+      <div><strong>{stats.folders}</strong><span>{stats.folders === 1 ? 'Folder' : 'Folders'}</span></div>
       <div><strong>{formatBytes(stats.totalBytes)}</strong><span>Stored</span></div>
       <div><strong>{getRemainingLabel(workspace)}</strong><span>Lifetime</span></div>
     </div>
@@ -86,6 +88,7 @@ export default function WorkspaceExplorer({
   onToast,
   uploadLimitLabel,
   lifetimeLabel,
+  onSetPin,
 }) {
   const breadcrumbs = buildBreadcrumbs(currentPath);
   const items = getChildren(workspace, currentPath);
@@ -96,7 +99,10 @@ export default function WorkspaceExplorer({
       <section className="nfs-workspace-head">
         <div className="nfs-workspace-head__main">
           <button type="button" className="nfs-back-btn" onClick={onBack}>&larr; All workspaces</button>
-          <h1>{workspace.name}</h1>
+          <h1>
+            {workspace.name}
+            {workspace.hasPin ? <span className="nfs-pin-badge">PIN</span> : null}
+          </h1>
           <div className="nfs-code-row">
             <button
               type="button"
@@ -140,6 +146,14 @@ export default function WorkspaceExplorer({
             >
               {workspace.isPersistent ? 'Disable permanent mode' : 'Make non-expiring'}
             </button>
+            {workspace.items?.length > 0 ? (
+              <a className="nfs-btn nfs-btn--ghost" href={getZipUrl(workspace.code)} download>
+                Download all (.zip)
+              </a>
+            ) : null}
+            <button type="button" className="nfs-btn nfs-btn--ghost" onClick={onSetPin}>
+              {workspace.hasPin ? 'Remove PIN' : 'Set PIN'}
+            </button>
             <button type="button" className="nfs-btn nfs-btn--danger" onClick={onDeleteWorkspace}>Delete workspace</button>
           </div>
         </div>
@@ -181,6 +195,11 @@ export default function WorkspaceExplorer({
             );
           })}
         </div>
+        {currentPath !== '/' && items.length > 0 ? (
+          <a className="nfs-btn nfs-btn--ghost nfs-btn--compact" href={getZipUrl(workspace.code, currentPath)} download>
+            Download this folder (.zip)
+          </a>
+        ) : null}
         <form className="nfs-inline-form" onSubmit={onCreateFolder}>
           <input
             value={newFolderName}
@@ -217,6 +236,10 @@ export default function WorkspaceExplorer({
             ))}
           </div>
         )}
+      </section>
+
+      <section className="nfs-panel">
+        <ActivityLog activity={workspace.activity} />
       </section>
     </div>
   );

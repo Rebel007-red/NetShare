@@ -19,6 +19,8 @@ export const recordKeys = {
   workspace: (code) => `workspaces/${code}`,
   link: (slug) => `links/${slug}`,
   note: (code) => `notes/${code}`,
+  /** Earlier texts of a note; a separate record so polling never loads them. */
+  noteVersions: (code) => `note-versions/${code}`,
 };
 
 export const recordPrefixes = {

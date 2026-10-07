@@ -16,23 +16,142 @@ async function readError(response) {
   return `Request failed (${response.status})`;
 }
 
-export async function request(path, options = {}) {
-  const { json, ...rest } = options;
-  const init = { ...rest };
+const ACCESS_KEY_STORAGE = 'netfileshare-access-key';
 
-  if (json !== undefined) {
-    init.headers = { 'Content-Type': 'application/json', ...(rest.headers ?? {}) };
-    init.body = JSON.stringify(json);
-  }
-
-  let response;
+function readAccessKey() {
   try {
-    response = await fetch(path, init);
+    return localStorage.getItem(ACCESS_KEY_STORAGE) ?? '';
   } catch {
-    throw new Error('Could not reach the server. Check your connection and try again.');
+    return '';
+  }
+}
+
+function storeAccessKey(value) {
+  try {
+    localStorage.setItem(ACCESS_KEY_STORAGE, value);
+  } catch {
+    // Without storage the passphrase is simply asked for again next time.
+  }
+}
+
+/** Which workspace or note, if any, an API path is about. */
+function itemTarget(path) {
+  const match = /^\/api\/(workspaces|notes)\/([A-Za-z0-9]{6})(?:[/?]|$)/.exec(path);
+  if (!match) return null;
+  return {
+    kind: match[1] === 'notes' ? 'note' : 'workspace',
+    base: `/api/${match[1]}/${match[2].toUpperCase()}`,
+  };
+}
+
+async function errorCode(response) {
+  try {
+    return (await response.clone().json())?.code;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Asks for the team passphrase once, checks it against the server, and keeps it.
+ * Several requests can hit the same wall at once, so they share one prompt.
+ */
+let passphrasePrompt = null;
+function askAccessKey() {
+  passphrasePrompt ??= (async () => {
+    try {
+      const entered = window.prompt('This server needs the team passphrase to create things. Enter it:');
+      if (!entered) return false;
+      const response = await fetch('/api/access', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key: entered }),
+      });
+      if (response.status === 204) {
+        storeAccessKey(entered);
+        return true;
+      }
+      throw new Error(response.status === 429 ? await readError(response) : 'That passphrase is not right');
+    } finally {
+      passphrasePrompt = null;
+    }
+  })();
+  return passphrasePrompt;
+}
+
+/** Asks for one item's PIN and unlocks it; concurrent requests share the prompt. */
+const pinPrompts = new Map();
+function askPin(target) {
+  if (!pinPrompts.has(target.base)) {
+    pinPrompts.set(target.base, (async () => {
+      try {
+        const entered = window.prompt(`This ${target.kind} is protected. Enter its PIN:`);
+        if (!entered) return false;
+        const response = await fetch(`${target.base}/unlock`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pin: entered }),
+        });
+        if (response.status === 204) return true;
+        throw new Error(response.status === 429 ? await readError(response) : 'That PIN is not right');
+      } finally {
+        pinPrompts.delete(target.base);
+      }
+    })());
+  }
+  return pinPrompts.get(target.base);
+}
+
+/** Prompts for an item's PIN on demand, e.g. from an "Unlock" button. */
+export function unlockItem(kind, code) {
+  const base = `/api/${kind === 'note' ? 'notes' : 'workspaces'}/${String(code).toUpperCase()}`;
+  return askPin({ kind, base });
+}
+
+/**
+ * fetch with the API's conventions: JSON in and out, readable errors, and the
+ * two interactive gates answered in one place. A 401 `access_required` asks for
+ * the team passphrase; `pin_required` asks for that item's PIN. Either way the
+ * request is retried once. Pass `interactive: false` for background loads (such
+ * as refreshing a list) so a locked item cannot trigger a wall of prompts.
+ */
+export async function request(path, options = {}) {
+  const { json, interactive = true, ...rest } = options;
+
+  const send = async () => {
+    const init = { ...rest, headers: { ...(rest.headers ?? {}) } };
+    if (json !== undefined) {
+      init.headers['Content-Type'] = 'application/json';
+      init.body = JSON.stringify(json);
+    }
+    const key = readAccessKey();
+    if (key) init.headers['X-Access-Key'] = key;
+
+    try {
+      return await fetch(path, init);
+    } catch {
+      throw new Error('Could not reach the server. Check your connection and try again.');
+    }
+  };
+
+  let response = await send();
+
+  if (response.status === 401 && interactive) {
+    const code = await errorCode(response);
+    if (code === 'access_required' && (await askAccessKey())) {
+      response = await send();
+    } else if (code === 'pin_required') {
+      const target = itemTarget(path);
+      if (target && (await askPin(target))) response = await send();
+    }
   }
 
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) {
+    const error = new Error(await readError(response));
+    error.status = response.status;
+    error.code = await errorCode(response);
+    throw error;
+  }
   if (response.status === 204) return null;
 
   const contentType = response.headers.get('content-type') ?? '';
@@ -59,6 +178,13 @@ export function formatDateTime(value) {
     hour: '2-digit',
     minute: '2-digit',
   }).format(date);
+}
+
+/** True when a record that can expire will do so within `windowMs`. */
+export function isExpiringSoon(record, windowMs) {
+  if (!record || record.isPersistent || !record.expiresAt) return false;
+  const remaining = new Date(record.expiresAt).getTime() - Date.now();
+  return Number.isFinite(remaining) && remaining > 0 && remaining <= windowMs;
 }
 
 /** Shared "2h 14m left" / "Never expires" label for workspaces and notes. */

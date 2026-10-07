@@ -1,11 +1,14 @@
 import { useEffect, useState } from 'react';
+import { isExpiringSoon } from '../services/apiClient';
 import {
   formatBytes,
   formatDateTime,
   getInlineFileUrl,
   getRemainingLabel,
   getWorkspaceStats,
+  getZipUrl,
 } from '../services/workspaceService';
+import ExpiryBanner from './ExpiryBanner';
 import QrPanel from './QrPanel';
 import ShareCodeField from './ShareCodeField';
 import { DownloadIcon, OpenIcon, RemoveIcon } from './icons';
@@ -35,12 +38,14 @@ function WorkspaceCard({
   onExtend,
   onTogglePersistent,
   onToast,
+  soonMs,
 }) {
   const stats = getWorkspaceStats(workspace);
   const files = (workspace.items ?? []).filter((item) => item.type === 'file');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const [draftTitle, setDraftTitle] = useState(workspace.name);
   const [showShare, setShowShare] = useState(false);
+  const soon = isExpiringSoon(workspace, soonMs);
 
   useEffect(() => {
     setDraftTitle(workspace.name);
@@ -87,11 +92,14 @@ function WorkspaceCard({
                 <h3>{workspace.name}</h3>
               </button>
             )}
-            <span className="nfs-workspace-status">{getRemainingLabel(workspace)}</span>
+            <span className={`nfs-workspace-status${soon ? ' nfs-workspace-status--soon' : ''}`}>
+              {getRemainingLabel(workspace)}
+            </span>
+            {workspace.hasPin ? <span className="nfs-pin-badge">PIN</span> : null}
           </div>
           <div className="nfs-workspace-card__meta-inline">
-            <span>{stats.files} files</span>
-            {stats.folders > 0 ? <span>{stats.folders} folders</span> : null}
+            <span>{stats.files} {stats.files === 1 ? 'file' : 'files'}</span>
+            {stats.folders > 0 ? <span>{stats.folders} {stats.folders === 1 ? 'folder' : 'folders'}</span> : null}
             <span>{formatBytes(stats.totalBytes)}</span>
             <span>{formatDateTime(workspace.createdAt)}</span>
           </div>
@@ -109,7 +117,16 @@ function WorkspaceCard({
             <button type="button" className="nfs-btn nfs-btn--ghost nfs-btn--compact" onClick={() => onAddFiles?.(workspace.code)}>
               Add files
             </button>
-            <button type="button" className="nfs-btn nfs-btn--ghost nfs-btn--compact" onClick={() => onExtend?.(workspace.code)}>
+            {files.length > 0 ? (
+              <a className="nfs-btn nfs-btn--ghost nfs-btn--compact" href={getZipUrl(workspace.code)} download>
+                ZIP
+              </a>
+            ) : null}
+            <button
+              type="button"
+              className={`nfs-btn nfs-btn--compact ${soon ? 'nfs-btn--primary' : 'nfs-btn--ghost'}`}
+              onClick={() => onExtend?.(workspace.code)}
+            >
               Extend
             </button>
             <label className="nfs-workspace-card__toggle">
@@ -197,6 +214,23 @@ function WorkspaceCard({
   );
 }
 
+function LockedWorkspaceCard({ workspace, onUnlock }) {
+  return (
+    <article className="nfs-workspace-card nfs-locked">
+      <div className="nfs-workspace-card__title-line">
+        <h3>{workspace.name}</h3>
+        <span className="nfs-pin-badge">PIN</span>
+      </div>
+      <div className="nfs-workspace-card__head-actions">
+        <span className="nfs-code-pill">{workspace.code}</span>
+        <button type="button" className="nfs-btn nfs-btn--secondary nfs-btn--compact" onClick={() => onUnlock(workspace.code)}>
+          Unlock
+        </button>
+      </div>
+    </article>
+  );
+}
+
 export default function WorkspaceHome({
   joinCode,
   onJoinCodeChange,
@@ -215,10 +249,14 @@ export default function WorkspaceHome({
   onExtendWorkspace,
   onToggleWorkspacePersistent,
   onToast,
+  soonMs,
+  onExtendMany,
+  onUnlock,
 }) {
   const [isJoining, setIsJoining] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const canJoin = joinCode.trim().length === 6;
+  const expiring = workspaces.filter((item) => !item.locked && isExpiringSoon(item, soonMs));
 
   // Keep the active workspace at the top of the list.
   const ordered = [...workspaces].sort((left, right) => {
@@ -288,6 +326,12 @@ export default function WorkspaceHome({
           </div>
         </div>
 
+        <ExpiryBanner
+          count={expiring.length}
+          noun="workspace"
+          onExtendAll={() => onExtendMany(expiring.map((item) => item.code))}
+        />
+
         <div className="nfs-workspace-stack">
           {isLoading ? (
             <div className="nfs-recent__empty">Loading workspaces…</div>
@@ -295,7 +339,9 @@ export default function WorkspaceHome({
             <div className="nfs-recent__empty">No workspaces yet. Create one to start sharing.</div>
           ) : (
             <div className="nfs-workspace-grid">
-              {ordered.map((workspace) => (
+              {ordered.map((workspace) => (workspace.locked ? (
+                <LockedWorkspaceCard key={workspace.code} workspace={workspace} onUnlock={onUnlock} />
+              ) : (
                 <WorkspaceCard
                   key={workspace.id ?? workspace.code}
                   workspace={workspace}
@@ -309,8 +355,9 @@ export default function WorkspaceHome({
                   onExtend={onExtendWorkspace}
                   onTogglePersistent={onToggleWorkspacePersistent}
                   onToast={onToast}
+                  soonMs={soonMs}
                 />
-              ))}
+              )))}
             </div>
           )}
         </div>

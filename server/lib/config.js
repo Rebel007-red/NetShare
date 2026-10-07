@@ -74,6 +74,37 @@ export const WORKSPACE_LIFETIME_MS = LIFETIME_HOURS * 60 * 60 * 1000;
 
 export const CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
 
+/**
+ * Optional team passphrase. When set, creating a workspace, link or note needs it;
+ * using one you hold the code for does not (the code is the access key).
+ */
+export const ACCESS_KEY = process.env.NETFILESHARE_ACCESS_KEY || '';
+
+export const RATE_LIMIT_ENABLED = (process.env.NETFILESHARE_RATE_LIMIT || 'on').toLowerCase() !== 'off';
+export const RATE_CREATE_PER_HOUR = Number(process.env.NETFILESHARE_RATE_CREATE_PER_HOUR || 60);
+export const RATE_UPLOAD_PER_HOUR = Number(process.env.NETFILESHARE_RATE_UPLOAD_PER_HOUR || 300);
+/** Failed lookups (unknown codes, wrong PINs or passphrases) per client per 10 minutes. */
+export const RATE_MISS_PER_10_MIN = Number(process.env.NETFILESHARE_RATE_MISS_PER_10_MIN || 60);
+
+/**
+ * Whose X-Forwarded-For to believe. Left at 'loopback', a client talking to the
+ * server directly cannot spoof its address to dodge the rate limits; set it to
+ * 'true' or an address list only when a real reverse proxy sits in front.
+ */
+function parseTrustProxy(value) {
+  const raw = String(value ?? 'loopback').trim();
+  if (raw === 'true') return true;
+  if (raw === 'false') return false;
+  if (/^\d+$/.test(raw)) return Number(raw);
+  return raw;
+}
+export const TRUST_PROXY = parseTrustProxy(process.env.NETFILESHARE_TRUST_PROXY);
+
+/** Folder ZIPs are built in the function, so the hosted build keeps them small. */
+export const MAX_ZIP_BYTES = Math.floor(
+  Number(process.env.NETFILESHARE_MAX_ZIP_MB || (IS_NETLIFY || IS_NETLIFY_DEV ? 20 : 500)) * 1024 * 1024,
+);
+
 export function describeLimits() {
   return {
     store: STORE_DRIVER,
@@ -81,5 +112,7 @@ export function describeLimits() {
     maxUploadFiles: MAX_UPLOAD_FILES,
     maxNoteBytes: MAX_NOTE_BYTES,
     lifetimeMs: WORKSPACE_LIFETIME_MS,
+    accessRequired: Boolean(ACCESS_KEY),
+    maxZipBytes: MAX_ZIP_BYTES,
   };
 }

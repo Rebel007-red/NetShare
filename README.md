@@ -19,7 +19,11 @@ or as a static frontend plus one Netlify Function.
 - Nested folders, drag-and-drop upload, multi-file upload
 - Rename and delete files, folders (recursively) and whole workspaces
 - Download files; inline previews for images
+- Download a whole workspace or any folder as a ZIP
 - Per-file and per-workspace QR codes
+- Activity log of uploads, renames, deletes and expiry changes (what and when, never who)
+- Optional PIN on a workspace
+- A warning, with one-click extend, before something expires
 
 ### Short links
 
@@ -37,14 +41,29 @@ or as a static frontend plus one Netlify Function.
 - Standalone share page at `/note/<CODE>` that needs nothing but the link
 - Same expiry model as workspaces: 7 days, extendable, or permanent
 - View counter
+- **Live editing:** switch a note to shared editing and anyone with the link can edit it
+  together, with a live preview and an "N people editing" indicator. Edits are merged, so
+  people typing in different places do not overwrite each other
+- **Version history** with one-click restore; a version is saved before large deletions,
+  so a mistaken select-all is undoable
+- Optional PIN on a note
+
+### Everywhere
+
+- Works on a phone (bottom tab bar) and follows the system light/dark setting
+- Installable as an app from the browser menu
+- **Back up and restore your codes:** your list lives only in this browser, so it can be
+  saved to a file and loaded on another device
 
 ## Architecture
 
 ```text
 src/                     React frontend (Vite)
-  lib/                   markdown rendering, highlighting, routing
-  services/              API clients and localStorage "recent codes"
+  lib/                   markdown rendering, highlighting, routing, live-edit merge helpers
+  hooks/                 the live-editing sync loop
+  services/              API clients, localStorage "recent codes", backup
   components/            UI
+  app.css                all styles (mobile first, dark mode)
 server/
   app.js                 the Express app — the single API implementation
   index.js               local / Docker entry point (listens, serves dist)
@@ -53,8 +72,9 @@ server/
     store/disk.js        filesystem driver (local, Docker)
     store/blobs.js       Netlify Blobs driver (Netlify)
 netlify/functions/
-  api.js                 wraps server/app.js with serverless-http
+  api.js                 Netlify-format handler that forwards to server/app.js
   cleanup.js             scheduled expiry sweep
+test/                    node:test suites (npm test)
 ```
 
 The API exists once. `server/index.js` runs it with `app.listen`;
@@ -167,6 +187,13 @@ Serves app and API on port `8787`, with `netfileshare-storage` and
 | `NETFILESHARE_DATA_DIR` | `./server-data` | Metadata directory (disk driver) |
 | `NETFILESHARE_STORAGE_DIR` | `./storage` | File directory (disk driver) |
 | `NETFILESHARE_BLOB_STORE` | `netfileshare` | Netlify Blobs store name |
+| `NETFILESHARE_ACCESS_KEY` | unset | Team passphrase needed to **create** workspaces, links and notes (not to use ones you hold the code for) |
+| `NETFILESHARE_RATE_LIMIT` | `on` | Set `off` to disable rate limiting |
+| `NETFILESHARE_RATE_CREATE_PER_HOUR` | `60` | Creates allowed per address per hour |
+| `NETFILESHARE_RATE_UPLOAD_PER_HOUR` | `300` | Upload and folder requests per address per hour |
+| `NETFILESHARE_RATE_MISS_PER_10_MIN` | `60` | Failed lookups (unknown codes, wrong PINs) per address before it is shut out for the window |
+| `NETFILESHARE_TRUST_PROXY` | `loopback` | Whose `X-Forwarded-For` to trust; set only when a real reverse proxy is in front |
+| `NETFILESHARE_MAX_ZIP_MB` | `500` (`20` on Netlify) | Largest folder ZIP |
 
 ## API
 
@@ -185,6 +212,9 @@ Serves app and API on port `8787`, with `netfileshare-storage` and
 | `DELETE` | `/api/workspaces/:code/items?path=` | Delete an item and its subtree |
 | `GET` | `/api/workspaces/:code/download?path=` | Download a file |
 | `GET` | `/api/workspaces/:code/file?path=` | Inline file (sandboxed) |
+| `GET` | `/api/workspaces/:code/zip?path=` | Whole workspace or one folder as a ZIP |
+| `POST` | `/api/workspaces/:code/pin` | Set (`{pin}`) or clear (`{pin:null}`) a PIN |
+| `POST` | `/api/workspaces/:code/unlock` | Enter a PIN; sets an unlock cookie |
 | `POST` | `/api/links` | Create a short link |
 | `GET` | `/api/links/:slug` | Read link metadata and clicks |
 | `PATCH` | `/api/links/:slug` | Retarget, relabel, change expiry |
@@ -197,13 +227,29 @@ Serves app and API on port `8787`, with `netfileshare-storage` and
 | `POST` | `/api/notes/:code/extend` | Add another lifetime period |
 | `POST` | `/api/notes/:code/persistence` | Toggle never-expiring |
 | `DELETE` | `/api/notes/:code` | Delete |
+| `POST` | `/api/notes/:code/sync` | One live-editing round trip: send a patch (or just poll), get the merged text |
+| `GET` | `/api/notes/:code/versions` | Saved earlier versions, newest first |
+| `GET` | `/api/notes/:code/versions/:id` | One version in full |
+| `POST` | `/api/notes/:code/versions/:id/restore` | Put a version back (the current text is saved first) |
+| `POST` | `/api/notes/:code/pin` | Set or clear a PIN |
+| `POST` | `/api/notes/:code/unlock` | Enter a PIN; sets an unlock cookie |
+| `POST` | `/api/access` | Check the team passphrase without creating anything |
 
 ## Security posture
 
-There is deliberately no authentication layer: **the share code is the access
+There is deliberately no user-account layer: **the share code is the access
 key**, and anyone holding it has full control of that workspace, note or link.
-That is the internal-use assumption this app is built on. Within it, the
-following are enforced:
+That is the internal-use assumption this app is built on. Two optional layers sit
+around it without replacing it: a **team passphrase** that controls who can
+*create* things, and a **per-item PIN** for the rare share that needs a second
+factor. Within that model, the following are enforced:
+
+- Creating is rate-limited per address, and every failed lookup (unknown code,
+  wrong PIN, wrong passphrase) counts against the caller, so guessing codes is
+  slow and then blocked. The address used is the one the server observed, not a
+  header the caller can set
+- PINs are stored as salted scrypt hashes and unlocked with an `HttpOnly` cookie
+  derived from that hash, so changing a PIN signs everyone out
 
 - Share codes and slugs come from `crypto.randomInt`, not `Math.random`
 - Path segments reject `..`, separators, control characters and reserved names;
@@ -220,7 +266,11 @@ following are enforced:
 
 Remaining limitations:
 
-- No user accounts, so no per-user access control or audit trail
+- No user accounts, so no per-user access control. The activity log records what
+  and when, not who
+- Rate-limit counters are per process; on Netlify each function instance counts
+  separately, so they deter abuse rather than guarantee a quota
+- Anyone who can open an item can also set or clear its PIN
 - The write lock is per process. A single Node server or a single Netlify
   function instance is safe; concurrent writes to the *same* record from two
   instances can still lose an update
@@ -236,9 +286,10 @@ simply go unreferenced) before the first run.
 
 ## Good next implementation steps
 
-1. Presigned direct-to-storage uploads so Netlify is not capped at 4 MB.
-2. Move metadata to SQLite or Postgres and get real transactions.
-3. Per-workspace storage quotas.
-4. Optional password protection on a workspace, note or link.
-5. Activity logging for uploads, deletes and expiry changes.
-6. ZIP download of a whole folder.
+1. Presigned direct-to-storage uploads so Netlify is not capped at 4 MB (or run the
+   Docker build, where the cap is 100 MB).
+2. Move metadata to SQLite or Postgres and get real transactions, which would also make
+   rate limits and PIN checks exact across instances.
+3. Automated browser tests for the flows now checked by hand.
+4. Per-workspace storage quotas.
+5. Edge rate limiting in front of Netlify.

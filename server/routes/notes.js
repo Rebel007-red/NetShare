@@ -1,6 +1,7 @@
 import express from 'express';
 import { badRequest, notFound } from '../lib/errors.js';
 import { isValidCode, normalizeCode } from '../lib/ids.js';
+import { getVersion, listVersions } from '../lib/noteVersions.js';
 import {
   createNote,
   deleteNote,
@@ -8,7 +9,9 @@ import {
   getNote,
   presentNote,
   recordNoteView,
+  restoreNoteVersion,
   setNotePersistence,
+  syncNote,
   updateNote,
 } from '../lib/notes.js';
 
@@ -74,6 +77,7 @@ router.post('/', async (req, res, next) => {
       format: req.body?.format,
       language: req.body?.language,
       isPersistent: req.body?.isPersistent === true,
+      isCollaborative: req.body?.isCollaborative === true,
     });
     res.status(201).json(presentNote(note));
   } catch (error) {
@@ -118,7 +122,56 @@ router.patch('/:code', async (req, res, next) => {
       content: body.content,
       format: body.format,
       language: Object.hasOwn(body, 'language') ? body.language : undefined,
+      isCollaborative: Object.hasOwn(body, 'isCollaborative') ? body.isCollaborative : undefined,
     });
+    res.json(presentNote(note));
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:code/sync', async (req, res, next) => {
+  try {
+    const body = req.body ?? {};
+    const result = await syncNote(requireCodeParam(req.params.code), {
+      clientId: body.clientId,
+      opId: body.opId,
+      rev: body.rev,
+      patch: body.patch,
+      viewer: body.viewer === true,
+    });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/:code/versions', async (req, res, next) => {
+  try {
+    const note = await loadNoteOr404(req.params.code);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ versions: await listVersions(note.code) });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.get('/:code/versions/:id', async (req, res, next) => {
+  try {
+    const note = await loadNoteOr404(req.params.code);
+    const version = await getVersion(note.code, req.params.id);
+    if (!version) throw notFound('That version is no longer available');
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({ id: version.id, at: version.at, size: version.size, title: version.title, reason: version.reason, content: version.content });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/:code/versions/:id/restore', async (req, res, next) => {
+  try {
+    const note = await restoreNoteVersion(requireCodeParam(req.params.code), req.params.id);
     res.json(presentNote(note));
   } catch (error) {
     next(error);
